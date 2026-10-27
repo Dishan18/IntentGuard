@@ -52,6 +52,22 @@ Requirements: Python 3.11+, Node 18+.
    backend/.venv/Scripts/python scripts/gateway_smoke.py
    ```
 
+## How decisions are made
+
+`intentguard.policy.engine.evaluate()` is a pure, deterministic function. It takes:
+
+- the owner's **mandate** (for example: refunds up to $50 automatically, $50–$200 with approval, one per customer per 30 days, $300 a day),
+- **facts read from PayPal** by the gateway itself (who the payment belongs to, how much was captured and already refunded, when),
+- IntentGuard's own **ledger** totals,
+
+and returns ALLOW, REVIEW or BLOCK, with every check and its reason. The agent's arguments are treated as claims to verify. An omitted refund amount is resolved to the full remaining amount before any limit is checked, and if PayPal can't be reached, the call is blocked.
+
+Try it against your sandbox data (read-only):
+
+```bash
+backend/.venv/Scripts/python scripts/policy_smoke.py
+```
+
 ## How agents connect
 
 An agent never talks to PayPal directly. Its runtime opens an MCP session to the gateway with:

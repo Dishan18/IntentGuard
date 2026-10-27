@@ -44,7 +44,7 @@ async def main() -> None:
     print("2. Support agent (customer cust_ben)")
     async with gateway_session(KEYS["support-agent"], customer_id="cust_ben") as session:
         tools = sorted(tool.name for tool in (await session.list_tools()).tools)
-        check(tools == ["create_refund", "get_order", "get_refund", "list_transactions"], f"sees {tools}")
+        check(tools == ["create_refund", "get_order", "get_refund"], f"sees {tools}")
 
         order = json.loads(text(await session.call_tool("get_order", {"id": bowl["order_id"]})))
         check(order["purchase_units"][0]["custom_id"] == "cust_ben", f"get_order {order['id']} forwarded")
