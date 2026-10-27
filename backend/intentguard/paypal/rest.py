@@ -50,3 +50,6 @@ class PayPalRest:
 
     def get_refund(self, refund_id: str) -> dict:
         return self._request("GET", f"/v2/payments/refunds/{refund_id}")
+
+    def get_invoice(self, invoice_id: str) -> dict:
+        return self._request("GET", f"/v2/invoicing/invoices/{invoice_id}")

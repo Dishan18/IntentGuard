@@ -43,4 +43,33 @@ More findings for the gateway:
 - `scripts/gateway_smoke.py` against the live sandbox: unknown agent → 401; Support Agent sees 4 tools, `get_order` forwarded, $1 refund on Ben's order `COMPLETED` through the gateway; Billing Agent's $200 refund → `E_TOOL_NOT_ALLOWED`, not sent; all calls in the audit log.
 - 6 new offline unit tests (no PayPal needed) for key hashing/re-keying, allowlist filtering, never-forward-on-block, and the `NOT_SENT` / `OUTCOME_UNKNOWN` paths. 8/8 passing.
 
-Next (Day 3): fact lookups from PayPal (`facts.py`) and the deterministic policy engine.
+## 2026-10-27 — Day 3: PayPal facts + deterministic policy engine
+
+- **Policy engine** (`policy/engine.py`): `evaluate(input) -> Decision` is a pure function with no I/O, no clock and no LLM. It runs every applicable check and records each as PASS / FAIL / REVIEW / SKIP with a human-readable detail, so the console can show all the reasons. Decisions are ALLOW, REVIEW or BLOCK. Each error code comes with a hint the agent can relay to the customer.
+- **Checks:**
+  - Every call: agent active, mandate active and in date, tool allowlisted, tool covered by the mandate.
+  - Refunds: request valid, currency matches, facts verified, **customer binding**, amount ≤ what's left on the capture, hard limit, refund window, refunds per customer, daily total, auto-approve threshold.
+  - Invoices: recipients must be existing customers, no extra recipients, and total limits. The review threshold applies when an invoice is *sent*, since a draft moves nothing.
+  - `get_order` / `get_refund` reads are customer-bound too, so the Support Agent can't read another customer's order.
+- **Amounts come from PayPal, not the agent:**
+  - An omitted refund amount resolves to the full remaining amount and goes through every limit.
+  - A malformed amount (negative, `NaN`, 3 decimals, wrong shape) is blocked and never treated as "refund everything".
+  - Invoice totals are upper bounds: items × quantity + tax + shipping, with discounts ignored.
+- **Facts** (`gateway/facts.py`): direct REST reads the agent can't influence. A capture gives the owner (`custom_id`), amount and date; the order gives refunds, filtered to this capture and to COMPLETED/PENDING. Refund → its capture, order → owner, invoice → recipients and total. Lookups never raise: 404 / `INVALID_RESOURCE_ID` → `E_UNKNOWN_*`; any other failure → `E_FACTS_UNAVAILABLE` (fail closed).
+- **Mandate model** (`policy/models.py`, pydantic): refund and invoice sections with validated thresholds. The demo mandates in `demo.py` are the owner's rules from the spec.
+- **Correction to Day 1:** `GET /v2/payments/captures/{id}` *does* return `custom_id`, plus an `up` link to the order. Facts use the capture for owner/amount/date and the order for the refund list.
+- `list_transactions` removed from the Support Agent: it returns every customer's payments and can't be customer-bound.
+- **Tests: 60 passing.** That's 40 engine tests (each demo scenario, amount resolution, fail-closed facts, every limit, invoice rules), 9 facts parsing tests, and a Hypothesis property test (400 cases per run) asserting that a non-BLOCK refund always belongs to the session customer, is within what PayPal says is refundable, and is within the hard, daily, frequency and age limits; and that ALLOW is always within auto-approve.
+- `scripts/policy_smoke.py` evaluates the demo scenarios against **live sandbox data** (read-only):
+
+  ```text
+  A  Ana: $20 for broken mug         ALLOW  amount=$20.00 (PayPal: $28.00 refundable)
+  B  Ben: injected $900 refund       BLOCK  E_EXCEEDS_CAPTURE, E_ABOVE_HARD_LIMIT, E_DAILY_LIMIT
+  B  Ben: refund Carla's order       BLOCK  E_SUBJECT_MISMATCH
+  C  Carla: full $160 dinner set     REVIEW R_ABOVE_AUTO_LIMIT
+  -  Dev: refund, no amount given    BLOCK  E_ABOVE_HARD_LIMIT amount=$240.00
+  -  Ben: look up Dev's order        BLOCK  E_SUBJECT_MISMATCH
+  -  Ana: made-up capture id         BLOCK  E_UNKNOWN_CAPTURE
+  ```
+
+Next (Day 4): wire the engine into the gateway, add a ledger with atomic reservations (per-customer counts and daily totals), and return structured errors to agents.

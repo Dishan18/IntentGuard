@@ -23,7 +23,7 @@ DEMO_AGENTS = [
         "name": "Support Agent",
         "owner": "Maya's Pottery (demo merchant)",
         "purpose": "Answers customer chat; looks up orders and issues refunds.",
-        "allowed_tools": ["get_order", "get_refund", "list_transactions", "create_refund"],
+        "allowed_tools": ["get_order", "get_refund", "create_refund"],
     },
     {
         "agent_id": "billing-agent",
