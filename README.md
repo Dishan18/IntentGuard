@@ -12,7 +12,7 @@ Small merchants are giving AI agents access to their PayPal account so they can 
 ## Repository layout
 
 ```text
-backend/intentguard/   Python package: config, PayPal auth, MCP client (gateway, policy, ledger coming)
+backend/intentguard/   Python package: config, PayPal auth/REST/MCP clients, gateway (policy engine and ledger coming)
 paypal-mcp/            Pinned PayPal MCP server, spawned by the gateway as its downstream
 scripts/               Dev scripts (tool catalog, sandbox seeding)
 docs/                  Generated PayPal MCP tool catalog and design notes
@@ -38,6 +38,28 @@ Requirements: Python 3.11+, Node 18+.
    backend/.venv/Scripts/python scripts/paypal_tools_list.py
    ```
    Use `--no-auth` to list tools without credentials.
+5. Seed demo orders and register the demo agents:
+   ```bash
+   backend/.venv/Scripts/python scripts/seed_orders.py
+   backend/.venv/Scripts/python scripts/register_agents.py
+   ```
+6. Run the gateway (MCP over streamable HTTP at `http://127.0.0.1:8765/mcp`):
+   ```bash
+   cd backend && .venv/Scripts/python -m intentguard.gateway
+   ```
+   Then, in a second terminal, run the end-to-end check:
+   ```bash
+   backend/.venv/Scripts/python scripts/gateway_smoke.py
+   ```
+
+## How agents connect
+
+An agent never talks to PayPal directly. Its runtime opens an MCP session to the gateway with:
+
+- `Authorization: Bearer <agent key>`: identifies the agent (Know-Your-Agent registry, keys stored only as hashes). Unknown keys get `401 E_AGENT_UNKNOWN`.
+- `X-IntentGuard-Customer: <customer id>`: the authenticated customer this conversation belongs to. This is set by the runtime, never by the LLM.
+
+Each agent only sees and can only call the PayPal tools in its allowlist. Every call is written to the audit log **before** it is forwarded, so a crash mid-call leaves an `OUTCOME_UNKNOWN` record to reconcile instead of a silent gap.
 
 ## License
 

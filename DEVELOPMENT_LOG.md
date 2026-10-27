@@ -31,3 +31,16 @@ More findings for the gateway:
 - The `mcp` Python SDK 2.x uses snake_case result fields (`is_error`), and PayPal's `create_refund` returns the refund JSON as a text block.
 - A first run crashed on that attribute **after** PayPal had already executed the refund, so Ana's order has two $5 refunds. That's the replay hazard in practice: the gateway must record the decision and reserve the amount *before* forwarding, and treat a client-side error after forwarding as "unknown outcome, reconcile," never "retry."
 - `GET /v2/checkout/orders/{id}` returns both `custom_id` (customer binding) and the list of refunds per capture, so one call gives the gateway the facts it needs (owner, captured amount, already refunded). `GET /v2/payments/captures/{id}` alone has neither.
+
+## 2026-10-27 — Day 2: gateway skeleton
+
+- **IntentGuard MCP gateway** (`python -m intentguard.gateway`): an MCP server over streamable HTTP at `/mcp`, built on the `mcp` 2.x low-level `Server`. It holds one long-lived connection to PayPal's MCP server and forwards calls to it.
+- **Know-Your-Agent registry** (`gateway/registry.py`): agents have an ID, owner, purpose and tool allowlist; they authenticate with bearer keys stored as sha256 hashes. `scripts/register_agents.py` registers a Support Agent (orders, refunds) and a Billing Agent (invoices only).
+- **Per-agent tool surface:** `tools/list` returns only the agent's allowed tools; calling anything else returns `E_TOOL_NOT_ALLOWED` and is never forwarded.
+- **Customer binding header:** the agent runtime sends `X-IntentGuard-Customer`; recorded on every call now, enforced by the policy engine on Day 4.
+- **Audit log** (SQLite, `tool_calls`): row written *before* forwarding; outcomes `OK`, `PAYPAL_ERROR`, `NOT_SENT`, or `OUTCOME_UNKNOWN` when a failure happens after the request may have reached PayPal (the Day 1 double-refund lesson).
+- **Token refresh:** a supervisor task owns the PayPal MCP stdio connection and reopens it with a new token before expiry (anyio requires the session to be opened and closed in the same task).
+- `scripts/gateway_smoke.py` against the live sandbox: unknown agent → 401; Support Agent sees 4 tools, `get_order` forwarded, $1 refund on Ben's order `COMPLETED` through the gateway; Billing Agent's $200 refund → `E_TOOL_NOT_ALLOWED`, not sent; all calls in the audit log.
+- 6 new offline unit tests (no PayPal needed) for key hashing/re-keying, allowlist filtering, never-forward-on-block, and the `NOT_SENT` / `OUTCOME_UNKNOWN` paths. 8/8 passing.
+
+Next (Day 3): fact lookups from PayPal (`facts.py`) and the deterministic policy engine.
