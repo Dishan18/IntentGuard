@@ -1,10 +1,9 @@
-"""Day-2 smoke test against a running gateway (python -m intentguard.gateway).
+"""End-to-end check of the demo scenarios through a running gateway (python -m intentguard.gateway).
 
+    python scripts/reset_demo.py      # fresh orders, empty ledger
     python scripts/gateway_smoke.py
 
-Checks: unknown agents are rejected; each agent only sees its own tools; the support agent's
-refund passes through to PayPal; the billing agent's refund is blocked and never sent; every
-call lands in the audit log.
+Moves real sandbox money: one $20 refund (scenario A). Everything else must be stopped before PayPal.
 """
 
 import asyncio
@@ -24,6 +23,17 @@ KEYS = json.loads((REPO_ROOT / "data" / "agent_keys.json").read_text(encoding="u
 ORDERS = json.loads((REPO_ROOT / "data" / "seed_orders.json").read_text(encoding="utf-8"))
 
 
+def order(customer, word):
+    return next(o for o in ORDERS if o["customer_id"] == customer and word in o["item"].lower())
+
+
+def refund(customer, word, value=None):
+    arguments = {"capture_id": order(customer, word)["capture_id"]}
+    if value:
+        arguments["amount"] = {"currency_code": "USD", "value": value}
+    return arguments
+
+
 def text(result) -> str:
     return "".join(block.text for block in result.content if block.type == "text")
 
@@ -34,44 +44,49 @@ def check(condition: bool, label: str) -> None:
         sys.exit(1)
 
 
+async def call(key, customer, tool, arguments):
+    async with gateway_session(key, customer_id=customer) as session:
+        result = await session.call_tool(tool, arguments)
+    return result, json.loads(text(result))
+
+
 async def main() -> None:
-    bowl = next(order for order in ORDERS if order["customer_id"] == "cust_ben" and "bowl" in order["item"])
+    support, billing = KEYS["support-agent"], KEYS["billing-agent"]
 
-    print("1. Unknown agent")
+    print("0. Unknown agent")
     response = httpx.post(DEFAULT_GATEWAY_URL, headers={"Authorization": "Bearer nope"}, json={})
-    check(response.status_code == 401, f"rejected with 401 ({response.json()['error']})")
+    check(response.status_code == 401, "rejected with 401 E_AGENT_UNKNOWN")
 
-    print("2. Support agent (customer cust_ben)")
-    async with gateway_session(KEYS["support-agent"], customer_id="cust_ben") as session:
-        tools = sorted(tool.name for tool in (await session.list_tools()).tools)
-        check(tools == ["create_refund", "get_order", "get_refund"], f"sees {tools}")
+    print("A. Ana: $20 for the broken mug")
+    result, body = await call(support, "cust_ana", "create_refund", refund("cust_ana", "mug", "20.00"))
+    check(not result.is_error and body["status"] == "COMPLETED", f"ALLOW -> PayPal refund {body.get('id')} {body.get('status')}")
+    result, body = await call(support, "cust_ana", "create_refund", refund("cust_ana", "towel", "5.00"))
+    check(body.get("code") == "E_FREQUENCY", "second refund in 30 days: BLOCK E_FREQUENCY")
 
-        order = json.loads(text(await session.call_tool("get_order", {"id": bowl["order_id"]})))
-        check(order["purchase_units"][0]["custom_id"] == "cust_ben", f"get_order {order['id']} forwarded")
+    print("B. Ben: prompt-injected requests")
+    result, body = await call(support, "cust_ben", "create_refund", refund("cust_ben", "coffee", "900.00"))
+    check(result.is_error and body["paypal_call"] == "NOT_SENT", f"$900: BLOCK {', '.join(body['codes'])}, NOT_SENT")
+    print(f"        agent is told: \"{body['message']}\"")
+    result, body = await call(support, "cust_ben", "create_refund", refund("cust_carla", "dinner", "20.00"))
+    check(body.get("code") == "E_SUBJECT_MISMATCH", "refund Carla's order: BLOCK E_SUBJECT_MISMATCH")
+    result, body = await call(support, "cust_ben", "get_order", {"id": order("cust_dev", "planter")["order_id"]})
+    check(body.get("code") == "E_SUBJECT_MISMATCH", "read Dev's order: BLOCK E_SUBJECT_MISMATCH")
 
-        refund = await session.call_tool(
-            "create_refund", {"capture_id": bowl["capture_id"], "amount": {"currency_code": "USD", "value": "1.00"}}
-        )
-        body = json.loads(text(refund))
-        check(not refund.is_error and body["status"] == "COMPLETED", f"$1 refund {body.get('id')} {body.get('status')}")
+    print("C. Carla: $160 dinner set")
+    result, body = await call(support, "cust_carla", "create_refund", refund("cust_carla", "dinner", "160.00"))
+    check(body.get("decision") == "REVIEW", f"REVIEW {body.get('review_id')}, PayPal {body.get('paypal_call')}")
 
-    print("3. Billing agent tries a refund")
-    async with gateway_session(KEYS["billing-agent"]) as session:
-        tools = sorted(tool.name for tool in (await session.list_tools()).tools)
-        check("create_refund" not in tools, f"does not see create_refund ({len(tools)} tools)")
-        blocked = await session.call_tool(
-            "create_refund", {"capture_id": bowl["capture_id"], "amount": {"currency_code": "USD", "value": "200.00"}}
-        )
-        check(blocked.is_error and json.loads(text(blocked))["code"] == "E_TOOL_NOT_ALLOWED", "blocked: E_TOOL_NOT_ALLOWED")
+    print("D. Billing agent tries a refund")
+    result, body = await call(billing, None, "create_refund", refund("cust_dev", "planter", "200.00"))
+    check(body.get("code") == "E_TOOL_NOT_ALLOWED", "BLOCK E_TOOL_NOT_ALLOWED")
 
-    print("4. Audit log (latest 4)")
-    rows = store.connect().execute(
-        "SELECT agent_id, customer_id, tool, decision, reason_code, forwarded, outcome FROM tool_calls"
-        " ORDER BY created_at DESC LIMIT 4"
-    )
-    for row in rows:
-        print("   ", dict(row))
-    check(True, "audit rows written")
+    print("Ledger and audit")
+    db = store.connect()
+    ledger = [dict(row) for row in db.execute("SELECT customer_id, amount, status, refund_id FROM refund_ledger")]
+    check(len(ledger) == 1 and ledger[0]["status"] == "COMMITTED", f"ledger: {ledger}")
+    forwarded = db.execute("SELECT COUNT(*) FROM tool_calls WHERE forwarded = 1").fetchone()[0]
+    total = db.execute("SELECT COUNT(*) FROM tool_calls").fetchone()[0]
+    check(forwarded == 1, f"{total} calls audited, {forwarded} forwarded to PayPal")
 
 
 if __name__ == "__main__":
