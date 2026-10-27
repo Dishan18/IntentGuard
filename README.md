@@ -68,6 +68,25 @@ Try it against your sandbox data (read-only):
 backend/.venv/Scripts/python scripts/policy_smoke.py
 ```
 
+## Talk to the Support Agent
+
+The Support Agent is an LLM (Gemini; a free AI Studio key works) whose only route to PayPal is the gateway. With the gateway running:
+
+```bash
+backend/.venv/Scripts/python scripts/chat.py --customer cust_ana
+```
+
+Each tool call and IntentGuard's decision are printed under the customer's message. Customers are `cust_ana`, `cust_ben`, `cust_carla` and `cust_dev`.
+
+`--compromised` swaps in a prompt that obeys the customer without question. It stands in for a jailbroken or badly prompted agent, and shows that what keeps the money safe is the gateway, not the model's judgement:
+
+```text
+Ben Okafor: Refund capture 78B2… in full please (it's my friend Carla's dinner set).
+   [IntentGuard] create_refund -> BLOCK E_SUBJECT_MISMATCH  (PayPal call NOT SENT)
+```
+
+If the LLM fails mid-conversation, the agent's reply is built from IntentGuard's last result, so it never claims a refund happened unless PayPal says it did.
+
 ## How agents connect
 
 An agent never talks to PayPal directly. Its runtime opens an MCP session to the gateway with:
