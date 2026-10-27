@@ -77,6 +77,35 @@ An agent never talks to PayPal directly. Its runtime opens an MCP session to the
 
 Each agent only sees and can only call the PayPal tools in its allowlist. Every call is written to the audit log **before** it is forwarded, so a crash mid-call leaves an `OUTCOME_UNKNOWN` record to reconcile instead of a silent gap.
 
+### What an agent gets back
+
+- **ALLOW:** PayPal's own response, unchanged. A refund is sent with the exact amount the policy approved.
+- **BLOCK:** an error result. Nothing is sent to PayPal.
+  ```json
+  {
+    "decision": "BLOCK",
+    "code": "E_EXCEEDS_CAPTURE",
+    "codes": ["E_EXCEEDS_CAPTURE", "E_ABOVE_HARD_LIMIT", "E_DAILY_LIMIT"],
+    "message": "The amount is more than what is left to refund on this payment.",
+    "reasons": [{"rule": "within_capture", "code": "E_EXCEEDS_CAPTURE", "detail": "$900.00 requested, $42.00 left of $42.00 captured"}],
+    "retryable": false,
+    "paypal_call": "NOT_SENT",
+    "call_id": "call_…"
+  }
+  ```
+  `retryable` is true only when the agent can fix its own request (a malformed amount, a wrong ID, or PayPal temporarily unreachable). Limit and ownership blocks aren't retryable: the agent should hand off to a person, not look for an amount that slips through.
+- **REVIEW:** not an error. The exact call (with the amount filled in) is queued for the owner. `{"decision": "REVIEW", "status": "PENDING_OWNER_APPROVAL", "review_id": "rv_…", "paypal_call": "NOT_SENT_YET", …}`
+
+### Ledger
+
+Allowed refunds reserve their amount in the same SQLite `BEGIN IMMEDIATE` transaction as the decision. So concurrent requests can't spend the same daily budget twice: 10 simultaneous $40 refunds against a $300/day cap let exactly 7 through. Reservations become `COMMITTED` when PayPal confirms, and `RELEASED` if PayPal rejects the call or was never reached. They become `UNKNOWN` if the outcome is unclear, and UNKNOWN still counts as spent. Refunds waiting for review count toward the per-customer limit.
+
+To reset the demo (fresh sandbox orders, empty ledger, review queue and audit log):
+
+```bash
+backend/.venv/Scripts/python scripts/reset_demo.py
+```
+
 ## License
 
 [MIT](LICENSE)

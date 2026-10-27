@@ -72,4 +72,38 @@ More findings for the gateway:
   -  Ana: made-up capture id         BLOCK  E_UNKNOWN_CAPTURE
   ```
 
-Next (Day 4): wire the engine into the gateway, add a ledger with atomic reservations (per-customer counts and daily totals), and return structured errors to agents.
+## 2026-10-27 — Day 4: policy enforcement in the gateway
+
+- **Every tool call now goes through the policy engine:**
+  1. Allowlist check. Disallowed tools get no PayPal lookup at all.
+  2. Facts read from PayPal in a worker thread, outside any lock.
+  3. One `BEGIN IMMEDIATE` transaction: ledger snapshot → `evaluate()` → audit row (decision, all codes, every check, resolved amount) → reservation or review.
+  4. Only ALLOW is forwarded.
+- **Forwarded refunds carry the approved amount.** If the agent omitted the amount, PayPal receives the resolved figure, not "full refund", so the capture can't change between check and execution.
+- **Structured responses:**
+  - BLOCK returns `decision`, `code`, all `codes`, a `message` the agent can relay, per-rule `reasons`, `retryable`, and `paypal_call: NOT_SENT`.
+  - REVIEW returns `review_id` and `PENDING_OWNER_APPROVAL`, and is not an error.
+  - `retryable` is false for limit and ownership blocks, so an agent isn't nudged to probe for an amount that slips through.
+- **Ledger** (`gateway/ledger.py`): reservations go `RESERVED` → `COMMITTED` (with PayPal refund ID), `RELEASED` (PayPal error or unreachable), or `UNKNOWN` (outcome unclear, still counts as spent). Amounts are decimal strings, summed with Decimal. Pending reviews count toward the per-customer limit, so asking again while a review is pending doesn't get a second refund.
+- **Review queue** (`reviews` table): stores the exact call to execute on approval, with the resolved amount.
+- **Schema:** new audit columns are added to existing databases on connect.
+- `scripts/reset_demo.py`: fresh sandbox orders plus empty ledger, reviews and audit log (agents kept). This is the basis for the hosted demo's Reset button.
+- **Tests: 68 passing.** Gateway tests drive `call_tool` with fake PayPal for every path: allow+commit, block, review, ownership, frequency via ledger, pending review counting, release on PayPal error and on unreachable, and unknown still counting. There are two race tests:
+  - 10 concurrent `call_tool`s on one event loop.
+  - 10 threads with **separate SQLite connections**, released at once by a barrier.
+
+  Both allow exactly 7 × $40 under a $300 cap. Mutation check: with `BEGIN` instead of `BEGIN IMMEDIATE`, the multi-connection test fails 5 out of 5 runs.
+- **Live run** (`reset_demo.py` then `gateway_smoke.py`, real gateway + sandbox):
+
+  ```text
+  A. Ana: $20 for the broken mug        ALLOW -> PayPal refund COMPLETED
+     second refund in 30 days           BLOCK E_FREQUENCY
+  B. Ben: $900                          BLOCK E_EXCEEDS_CAPTURE, E_ABOVE_HARD_LIMIT, E_DAILY_LIMIT, NOT_SENT
+     refund Carla's order               BLOCK E_SUBJECT_MISMATCH
+     read Dev's order                   BLOCK E_SUBJECT_MISMATCH
+  C. Carla: $160                        REVIEW (queued), PayPal NOT_SENT_YET
+  D. Billing agent refund               BLOCK E_TOOL_NOT_ALLOWED
+  7 calls audited, 1 forwarded to PayPal; ledger: one $20 COMMITTED with its PayPal refund ID
+  ```
+
+Next (Day 5): the Support Agent itself, an LLM tool loop connected to the gateway over MCP, with the session customer set by its runtime.
