@@ -1,0 +1,8 @@
+{
+  "name": "intentguard-paypal-mcp",
+  "private": true,
+  "description": "Pinned copy of PayPal's local MCP server, spawned by the IntentGuard gateway as its downstream.",
+  "dependencies": {
+    "@paypal/mcp": "1.8.1"
+  }
+}

@@ -1,0 +1,27 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# node
+node_modules/
+
+# local data
+*.sqlite
+*.db
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# sandbox seed output (IDs differ per developer)
+data/
