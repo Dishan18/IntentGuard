@@ -6,6 +6,10 @@ export type Order = {
   amount: string;
   currency: string;
   refunded: string | null;
+  /** Refunded by PayPal but still settling (PayPal status PENDING). */
+  refund_processing: string | null;
+  /** PayPal reported the refund FAILED or CANCELLED: no money went back. */
+  refund_failed: boolean;
   /** The latest refund request for this order that needed the owner's approval. */
   review: { id: string; status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED" | "FAILED"; amount: string | null; note: string | null } | null;
 };

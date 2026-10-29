@@ -150,11 +150,16 @@ async def test_allowed_refund_forwards_the_resolved_amount_and_commits(db):
     state = make_state(db)
     result = await call_tool(make_ctx(state, make_agent(db)), refund())  # no amount: full remaining
     assert not result.is_error
-    assert state.downstream.calls == [
-        ("create_refund", {"capture_id": "CAP_BEN", "amount": {"currency_code": "USD", "value": "40.00"}})
-    ]
+    call_id = db.execute("SELECT id FROM tool_calls").fetchone()[0]
+    assert state.downstream.calls == [(
+        "create_refund",
+        # The call ID rides along as PayPal's invoice_id, for reconciliation.
+        {"capture_id": "CAP_BEN", "amount": {"currency_code": "USD", "value": "40.00"}, "invoice_id": call_id},
+    )]
     [entry] = ledger_rows(db)
-    assert (entry["status"], entry["amount"], entry["refund_id"]) == ("COMMITTED", "40.00", "REF1")
+    assert (entry["status"], entry["amount"], entry["refund_id"], entry["paypal_status"]) == (
+        "COMMITTED", "40.00", "REF1", "COMPLETED"
+    )
     call = db.execute("SELECT decision, outcome, resolved_amount FROM tool_calls").fetchone()
     assert tuple(call) == ("ALLOW", "OK", "40.00")
 

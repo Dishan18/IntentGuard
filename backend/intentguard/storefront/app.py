@@ -92,12 +92,19 @@ def _logged_in(request: Request) -> Customer | None:
 
 def _order_status(db: sqlite3.Connection, order: dict) -> dict:
     """The store's view of an order: what has been refunded, and whether a refund awaits the owner."""
+    rows = db.execute(
+        "SELECT amount, status, paypal_status FROM refund_ledger WHERE capture_id = ?", (order["capture_id"],)
+    ).fetchall()
+    # PayPal's own status decides the wording: PENDING is still on its way, FAILED never arrived.
     refunded = sum(
-        (Decimal(row["amount"]) for row in db.execute(
-            "SELECT amount FROM refund_ledger WHERE capture_id = ? AND status = 'COMMITTED'", (order["capture_id"],)
-        )),
+        (Decimal(r["amount"]) for r in rows if r["status"] == "COMMITTED" and r["paypal_status"] != "PENDING"),
         Decimal("0"),
     )
+    processing = sum(
+        (Decimal(r["amount"]) for r in rows if r["status"] == "COMMITTED" and r["paypal_status"] == "PENDING"),
+        Decimal("0"),
+    )
+    failed = any(r["paypal_status"] in ("FAILED", "CANCELLED") for r in rows)
     review = db.execute(
         "SELECT id, status, amount, note FROM reviews WHERE json_extract(arguments, '$.capture_id') = ?"
         " ORDER BY created_at DESC LIMIT 1",
@@ -109,6 +116,8 @@ def _order_status(db: sqlite3.Connection, order: dict) -> dict:
         "amount": order["amount"],
         "currency": order.get("currency", "USD"),
         "refunded": f"{refunded:.2f}" if refunded else None,
+        "refund_processing": f"{processing:.2f}" if processing else None,
+        "refund_failed": failed and not refunded and not processing,
         # The latest refund request the owner had to decide on, so the chat can tell the customer.
         "review": dict(review) if review else None,
     }

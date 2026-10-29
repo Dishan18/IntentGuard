@@ -14,6 +14,7 @@ authenticated customer the conversation belongs to; the policy binds actions to 
 """
 
 import json
+import os
 import sqlite3
 import time
 import uuid
@@ -33,6 +34,7 @@ from intentguard.gateway import registry
 from intentguard.gateway.downstream import DownstreamUnavailable, PayPalDownstream
 from intentguard.gateway.facts import FactsService
 from intentguard.gateway.ledger import Ledger, Reviews
+from intentguard.gateway.reconcile import Reconciler
 from intentguard.paypal.auth import TokenProvider
 from intentguard.paypal.rest import PayPalRest
 from intentguard.policy.engine import evaluate
@@ -56,6 +58,9 @@ RETRYABLE_CODES = {"E_INVALID_REQUEST", "E_CURRENCY_NOT_ALLOWED", "E_UNKNOWN_CAP
 # How long the gateway waits for PayPal on a forwarded call before recording OUTCOME_UNKNOWN.
 FORWARD_TIMEOUT_S = 60.0
 
+# How often the poller checks refunds whose outcome isn't final (see gateway/reconcile.py).
+RECONCILE_INTERVAL_S = float(os.getenv("RECONCILE_INTERVAL_S", "60"))
+
 
 @dataclass
 class GatewayState:
@@ -63,6 +68,8 @@ class GatewayState:
     downstream: PayPalDownstream
     facts: FactsService
     mandates: Callable[[str], Mandate | None] = demo.MANDATES.get
+    reconciler: Reconciler | None = None
+    webhook_id: str = ""
     known_customer_emails: frozenset[str] = demo.KNOWN_CUSTOMER_EMAILS
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
@@ -147,11 +154,13 @@ def _forward_arguments(tool: str, arguments: dict, decision: Decision, mandate: 
     return arguments
 
 
-def _refund_id(result_text: str) -> str | None:
+def _refund_fields(result_text: str) -> tuple[str | None, str | None]:
+    """PayPal's refund ID and status from a create_refund result."""
     try:
-        return json.loads(result_text).get("id")
+        body = json.loads(result_text)
+        return body.get("id"), body.get("status")
     except (ValueError, AttributeError):
-        return None
+        return None, None
 
 
 def evaluate_locked(
@@ -267,7 +276,13 @@ async def call_tool(ctx: ServerRequestContext, params: types.CallToolRequestPara
 
 
 async def forward(state: GatewayState, call_id: str, tool: str, arguments: dict) -> types.CallToolResult:
-    """Send an approved call to PayPal and settle the audit row and any reservation."""
+    """Send an approved call to PayPal and settle the audit row and any reservation.
+
+    A refund carries the call ID as its PayPal `invoice_id`, so if the outcome is ever unclear the
+    reconciler can find exactly the refund this call created (or be sure there isn't one).
+    """
+    if tool == "create_refund":
+        arguments = {**arguments, "invoice_id": call_id}
 
     def record(**fields) -> None:
         columns = ", ".join(f"{name} = ?" for name in fields)
@@ -299,7 +314,8 @@ async def forward(state: GatewayState, call_id: str, tool: str, arguments: dict)
     if result.is_error:
         state.ledger.release(call_id, state.clock())
     else:
-        state.ledger.commit(call_id, _refund_id(text), state.clock())
+        refund_id, paypal_status = _refund_fields(text)
+        state.ledger.commit(call_id, refund_id, state.clock(), paypal_status)
     return result
 
 
@@ -313,9 +329,13 @@ def build_server(
         settings = get_settings()
         tokens = TokenProvider(settings)
         downstream = PayPalDownstream(settings, tokens)
+        paypal = PayPalRest(settings, tokens)
+        facts = FactsService(paypal)
         async with anyio.create_task_group() as task_group:
             await task_group.start(downstream.run)
-            state = GatewayState(db=db, downstream=downstream, facts=FactsService(PayPalRest(settings, tokens)))
+            state = GatewayState(db=db, downstream=downstream, facts=facts, webhook_id=settings.paypal_webhook_id)
+            state.reconciler = Reconciler(db, paypal, facts, state.clock)
+            task_group.start_soon(state.reconciler.poll, RECONCILE_INTERVAL_S)
             on_state(state)
             try:
                 yield state

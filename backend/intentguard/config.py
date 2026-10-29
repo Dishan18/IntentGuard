@@ -21,6 +21,7 @@ class Settings:
     paypal_client_id: str
     paypal_client_secret: str
     paypal_environment: str
+    paypal_webhook_id: str = ""  # from the developer dashboard or scripts/register_webhook.py
 
     @property
     def paypal_api_base(self) -> str:
@@ -36,4 +37,5 @@ def get_settings() -> Settings:
         paypal_client_id=os.getenv("PAYPAL_CLIENT_ID", ""),
         paypal_client_secret=os.getenv("PAYPAL_CLIENT_SECRET", ""),
         paypal_environment=environment,
+        paypal_webhook_id=os.getenv("PAYPAL_WEBHOOK_ID", "").strip(),
     )

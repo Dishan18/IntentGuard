@@ -154,6 +154,23 @@ The store checks back while a refund is waiting, then tells the customer in the 
 
 Allowed refunds reserve their amount in the same SQLite `BEGIN IMMEDIATE` transaction as the decision. So concurrent requests can't spend the same daily budget twice: 10 simultaneous $40 refunds against a $300/day cap let exactly 7 through. Reservations become `COMMITTED` when PayPal confirms, and `RELEASED` if PayPal rejects the call or was never reached. They become `UNKNOWN` if the outcome is unclear, and UNKNOWN still counts as spent. Refunds waiting for review count toward the per-customer limit.
 
+### Staying in sync with PayPal (webhooks and poller)
+
+PayPal is the source of truth for what a refund did, so the ledger is reconciled against it:
+
+- **Every forwarded refund carries its IntentGuard call ID as PayPal's `invoice_id`.** If the gateway never heard back (an `UNKNOWN` entry), the reconciler looks for the refund with that ID on the capture. Found: COMMITTED, with PayPal's refund ID and status. Not found after 10 minutes: the request never took effect, and the amount is released.
+- **Refunds PayPal reports as PENDING** are followed until they settle. FAILED or CANCELLED means no money moved, so the entry is released and stops counting toward limits; the store shows "Refund failed".
+- **Poller:** the gateway checks open entries at startup and then every `RECONCILE_INTERVAL_S` (60 s). `scripts/reconcile.py` runs a pass on demand.
+- **Webhooks:** `POST /webhooks/paypal` on the gateway. Each delivery is verified with PayPal's `verify-webhook-signature` against `PAYPAL_WEBHOOK_ID` (no ID configured means every delivery is refused). Event IDs are recorded so a redelivery is processed once. The payload is only a pointer: the status is read from PayPal's API, never taken from the event. Refunds made outside IntentGuard (in the PayPal dashboard) are noted as `external`; policy facts are read live from PayPal, so the next decision already accounts for them.
+
+PayPal can only deliver webhooks to a public HTTPS URL (the deployed gateway, or a tunnel to a local one):
+
+```bash
+backend/.venv/Scripts/python scripts/register_webhook.py --url https://<public-host>/webhooks/paypal
+```
+
+Put the printed ID in `.env` as `PAYPAL_WEBHOOK_ID` and restart the gateway. Without webhooks, the poller alone keeps the ledger correct.
+
 To reset the demo (fresh sandbox orders, empty ledger, review queue and audit log):
 
 ```bash
