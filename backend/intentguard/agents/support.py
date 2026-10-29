@@ -9,7 +9,7 @@ decided by the gateway's policy, not by how well the model resists a persuasive 
 """
 
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 
@@ -19,6 +19,7 @@ from intentguard.agents.llm import GeminiClient, LLMUnavailable, tool_declaratio
 from intentguard.gateway.client import DEFAULT_GATEWAY_URL, gateway_session
 
 SessionFactory = Callable[[str, str | None, str], AbstractAsyncContextManager[ClientSession]]
+ToolStartListener = Callable[[str, dict], Awaitable[None]]
 
 SYSTEM_PROMPT = """\
 You are the customer support assistant for {store}, a small online pottery shop.
@@ -142,9 +143,19 @@ class SupportAgent:
         )
 
     async def reply(
-        self, customer: Customer, orders: list[dict], history: list[tuple[str, str]], message: str
+        self,
+        customer: Customer,
+        orders: list[dict],
+        history: list[tuple[str, str]],
+        message: str,
+        on_tool_start: ToolStartListener | None = None,
+        on_tool_event: Callable[[ToolEvent], Awaitable[None]] | None = None,
     ) -> AgentReply:
-        """One agent turn. `history` is earlier (role, text) pairs, role "user" or "model"."""
+        """One agent turn. `history` is earlier (role, text) pairs, role "user" or "model".
+
+        The listeners are told about each tool call as it is sent to the gateway and when its
+        decision comes back, so a UI can show them before the agent has finished replying.
+        """
         prompt = COMPROMISED_PROMPT if self._compromised else SYSTEM_PROMPT
         system = prompt.format(
             store=self._store_name, customer_name=customer.name, customer_id=customer.id, orders=_format_orders(orders)
@@ -172,9 +183,14 @@ class SupportAgent:
                 responses = []
                 for call in calls:
                     arguments = call.get("args") or {}
+                    if on_tool_start:
+                        await on_tool_start(call["name"], arguments)
                     result = await session.call_tool(call["name"], arguments)
                     decision, code, body = _parse_result(result)
-                    events.append(ToolEvent(call["name"], arguments, decision, code, body))
+                    event = ToolEvent(call["name"], arguments, decision, code, body)
+                    events.append(event)
+                    if on_tool_event:
+                        await on_tool_event(event)
                     function_response = {
                         "name": call["name"],
                         "response": {"error": body} if result.is_error else {"output": body},

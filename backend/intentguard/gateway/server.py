@@ -57,6 +57,9 @@ AGENT_SCOPE_KEY = "intentguard.agent"
 # deliberately not retryable: the agent should hand off to a person, not hunt for a smaller amount.
 RETRYABLE_CODES = {"E_INVALID_REQUEST", "E_CURRENCY_NOT_ALLOWED", "E_UNKNOWN_CAPTURE", "E_UNKNOWN_INVOICE", "E_FACTS_UNAVAILABLE"}
 
+# How long the gateway waits for PayPal on a forwarded call before recording OUTCOME_UNKNOWN.
+FORWARD_TIMEOUT_S = 60.0
+
 
 @dataclass
 class GatewayState:
@@ -242,7 +245,10 @@ async def forward(state: GatewayState, call_id: str, tool: str, arguments: dict)
 
     started = time.monotonic()
     try:
-        result = await state.downstream.call_tool(tool, arguments)
+        # Shielded: if the agent disconnects mid-call, PayPal may still act on the request, so the
+        # gateway waits for the outcome and records it. The timeout turns a hang into OUTCOME_UNKNOWN.
+        with anyio.CancelScope(shield=True), anyio.fail_after(FORWARD_TIMEOUT_S):
+            result = await state.downstream.call_tool(tool, arguments)
     except DownstreamUnavailable as error:
         record(outcome="NOT_SENT", result=str(error))
         state.ledger.release(call_id, state.clock())
