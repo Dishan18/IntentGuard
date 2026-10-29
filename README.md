@@ -12,7 +12,8 @@ Small merchants are giving AI agents access to their PayPal account so they can 
 ## Repository layout
 
 ```text
-backend/intentguard/   Python package: config, PayPal auth/REST/MCP clients, gateway (policy engine and ledger coming)
+backend/intentguard/   Python package: config, PayPal clients, gateway (policy engine, ledger), agents, demo store API
+apps/store/            React demo store with the customer chat
 paypal-mcp/            Pinned PayPal MCP server, spawned by the gateway as its downstream
 scripts/               Dev scripts (tool catalog, sandbox seeding)
 docs/                  Generated PayPal MCP tool catalog and design notes
@@ -20,7 +21,7 @@ docs/                  Generated PayPal MCP tool catalog and design notes
 
 ## Setup (so far)
 
-Requirements: Python 3.11+, Node 18+.
+Requirements: Python 3.11+, Node 22+ (the store build uses Vite 8).
 
 1. Get sandbox credentials: [PayPal Developer Dashboard](https://developer.paypal.com/dashboard/) → **Apps & Credentials** → **Sandbox** → **Create App** (merchant type, default sandbox business account).
 2. Configure:
@@ -68,7 +69,23 @@ Try it against your sandbox data (read-only):
 backend/.venv/Scripts/python scripts/policy_smoke.py
 ```
 
-## Talk to the Support Agent
+## The demo store
+
+**Maya's Pottery** is a small web store whose customer chat is the Support Agent. The page shows the customer's orders and the chat; each refund the agent attempts shows up live as an IntentGuard card (checking → allowed / held for approval / blocked, with the codes and whether PayPal was called).
+
+```bash
+cd apps/store && npm ci && npm run build && cd ../..
+backend/.venv/Scripts/python -m intentguard.gateway       # terminal 1
+backend/.venv/Scripts/python -m intentguard.storefront    # terminal 2, then open http://127.0.0.1:8766
+```
+
+For UI work, run `npm run dev` in `apps/store` instead of building (http://localhost:5173, API proxied to the store backend).
+
+- **"Logged in as"** stands in for the store's real login: it sets a cookie, and each chat turn takes the customer from that cookie, never from the message or the LLM.
+- The chips above the input are the demo scenarios. Ben's second one quotes Carla's real PayPal transaction ID from the sandbox, the way an attacker would.
+- **Simulate a compromised agent** swaps in the naive prompt described below.
+
+## Talk to the Support Agent from a terminal
 
 The Support Agent is an LLM (Gemini; a free AI Studio key works) whose only route to PayPal is the gateway. With the gateway running:
 

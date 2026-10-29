@@ -253,6 +253,26 @@ async def test_unknown_outcome_still_counts_as_spent(db):
     assert body(await call_tool(make_ctx(state, agent), refund("CAP2", "10.00")))["code"] == "E_FREQUENCY"
 
 
+@pytest.mark.anyio
+async def test_agent_disconnect_mid_refund_still_records_paypal_outcome(db):
+    class SlowDownstream(FakeDownstream):
+        async def call_tool(self, name, arguments):
+            started.set()
+            await anyio.sleep(0.1)
+            return await super().call_tool(name, arguments)
+
+    started = anyio.Event()
+    state = make_state(db, downstream=SlowDownstream())
+    agent = make_agent(db)
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(call_tool, make_ctx(state, agent), refund(value="10.00"))
+        await started.wait()
+        tg.cancel_scope.cancel()  # the MCP request is cancelled while PayPal is working
+    [entry] = ledger_rows(db)
+    assert (entry["status"], entry["refund_id"]) == ("COMMITTED", "REF1")
+    assert db.execute("SELECT outcome FROM tool_calls").fetchone()[0] == "OK"
+
+
 # ---------------------------------------------------------------- races
 
 

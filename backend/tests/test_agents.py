@@ -88,6 +88,22 @@ async def test_tool_call_goes_through_gateway_and_result_is_fed_back():
 
 
 @pytest.mark.anyio
+async def test_listeners_hear_each_call_before_and_after_the_gateway():
+    llm = FakeLLM(model_says(function_call()), model_says({"text": "Sorry."}))
+    session = FakeSession([(BLOCKED, True)])
+    heard = []
+
+    async def started(tool, arguments):
+        heard.append(("start", tool, len(session.calls)))
+
+    async def decided(event):
+        heard.append(("decided", event.decision, len(session.calls)))
+
+    await make_agent(llm, session).reply(BEN, ORDERS, [], "refund", on_tool_start=started, on_tool_event=decided)
+    assert heard == [("start", "create_refund", 0), ("decided", "BLOCK", 1)]
+
+
+@pytest.mark.anyio
 async def test_prompt_carries_customer_and_orders_and_tools_are_declared():
     llm = FakeLLM(model_says({"text": "Hi Ben"}))
     await make_agent(llm, FakeSession([])).reply(BEN, ORDERS, [("user", "hello"), ("model", "hi")], "again")
@@ -190,6 +206,42 @@ async def test_falls_back_to_next_model_when_primary_stays_overloaded():
         return httpx.Response(200, json=OK) if "fallback" in request.url.path else httpx.Response(503, json=BUSY)
 
     assert (await client_with(handler).generate("sys", [], [])).model == "fallback"
+
+
+@pytest.mark.anyio
+async def test_overloaded_model_is_skipped_until_its_cooldown_ends():
+    seen = []
+    now = [0.0]
+
+    def handler(request):
+        seen.append("primary" if "primary" in request.url.path else "fallback")
+        return httpx.Response(200, json=OK) if seen[-1] == "fallback" else httpx.Response(503, json=BUSY)
+
+    llm = GeminiClient("key", ["primary", "fallback"], backoff_s=0, cooldown_s=60,
+                       transport=httpx.MockTransport(handler), clock=lambda: now[0])
+    await llm.generate("sys", [], [])
+    assert seen == ["primary", "primary", "fallback"]
+    seen.clear()
+    await llm.generate("sys", [], [])  # next turn: primary is cooling down
+    assert seen == ["fallback"]
+    seen.clear()
+    now[0] = 61
+    await llm.generate("sys", [], [])  # cooldown over: primary is tried again
+    assert seen == ["primary", "primary", "fallback"]
+
+
+@pytest.mark.anyio
+async def test_timeout_moves_to_the_next_model_without_retrying():
+    seen = []
+
+    def handler(request):
+        seen.append("primary" if "primary" in request.url.path else "fallback")
+        if seen[-1] == "primary":
+            raise httpx.ReadTimeout("slow", request=request)
+        return httpx.Response(200, json=OK)
+
+    assert (await client_with(handler).generate("sys", [], [])).model == "fallback"
+    assert seen == ["primary", "fallback"]
 
 
 @pytest.mark.anyio

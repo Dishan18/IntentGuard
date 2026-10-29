@@ -25,3 +25,6 @@ Thumbs.db
 
 # sandbox seed output (IDs differ per developer)
 data/
+
+# web build output
+dist/
