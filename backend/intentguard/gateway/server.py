@@ -26,12 +26,8 @@ import anyio
 import mcp_types as types
 from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel import Server
-from starlette.requests import Request
-from starlette.responses import JSONResponse
-from starlette.routing import Route
-from starlette.types import ASGIApp, Receive, Scope, Send
 
-from intentguard import demo, store
+from intentguard import demo
 from intentguard.config import get_settings
 from intentguard.gateway import registry
 from intentguard.gateway.downstream import DownstreamUnavailable, PayPalDownstream
@@ -80,7 +76,7 @@ class GatewayState:
 
 
 def _agent(ctx: ServerRequestContext) -> registry.Agent:
-    # Set by AgentAuthMiddleware; requests without a valid key never reach the handlers.
+    # Set by AuthMiddleware (gateway/app.py); requests without a valid key never reach the handlers.
     return ctx.request.scope[AGENT_SCOPE_KEY]
 
 
@@ -158,6 +154,74 @@ def _refund_id(result_text: str) -> str | None:
         return None
 
 
+def evaluate_locked(
+    state: GatewayState,
+    agent: registry.Agent,
+    mandate: Mandate | None,
+    tool: str,
+    arguments: dict,
+    customer_id: str | None,
+    facts,
+    now: datetime,
+) -> Decision:
+    """Evaluate a call inside an open ledger transaction, against an up-to-date ledger snapshot."""
+    snapshot = LedgerSnapshot()
+    if tool == "create_refund" and mandate is not None and mandate.refunds is not None:
+        state.reviews.expire_stale(now)  # an abandoned review stops counting toward the customer's limit
+        snapshot = state.ledger.snapshot(mandate, customer_id, now)
+    decision = evaluate(
+        EvaluationInput(
+            agent=AgentView(agent.id, agent.active, agent.allowed_tools),
+            mandate=mandate,
+            tool=tool,
+            arguments=arguments,
+            session_customer=customer_id,
+            facts=facts,
+            ledger=snapshot,
+            known_customer_emails=state.known_customer_emails,
+            now=now,
+        )
+    )
+    if decision.outcome is Outcome.ALLOW and tool not in state.downstream.tools:
+        decision = Decision(Outcome.BLOCK, decision.checks, "E_TOOL_NOT_ALLOWED", codes=("E_TOOL_NOT_ALLOWED",))
+    return decision
+
+
+def record_call(
+    state: GatewayState,
+    call_id: str,
+    agent_id: str,
+    customer_id: str | None,
+    tool: str,
+    arguments: dict,
+    decision: Decision,
+    review_id: str | None,
+) -> None:
+    """Write the audit row. Called before anything is forwarded to PayPal."""
+    state.db.execute(
+        "INSERT INTO tool_calls (id, agent_id, customer_id, tool, arguments, decision, reason_code, codes, checks,"
+        " resolved_amount, review_id, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            call_id,
+            agent_id,
+            customer_id,
+            tool,
+            json.dumps(arguments),
+            decision.outcome.value,
+            decision.code,
+            json.dumps(list(decision.codes)),
+            json.dumps([check.__dict__ | {"result": check.result.value} for check in decision.checks]),
+            None if decision.resolved_amount is None else str(decision.resolved_amount),
+            review_id,
+            {"ALLOW": "PENDING", "REVIEW": "AWAITING_REVIEW", "BLOCK": "NOT_SENT"}[decision.outcome.value],
+        ),
+    )
+
+
+def new_call_id() -> str:
+    return f"call_{uuid.uuid4().hex[:16]}"
+
+
 async def list_tools(ctx: ServerRequestContext, params: types.PaginatedRequestParams | None) -> types.ListToolsResult:
     state: GatewayState = ctx.lifespan_context
     agent = _agent(ctx)
@@ -171,7 +235,7 @@ async def call_tool(ctx: ServerRequestContext, params: types.CallToolRequestPara
     customer_id = _customer(ctx)
     tool = params.name
     arguments = dict(params.arguments or {})
-    call_id = f"call_{uuid.uuid4().hex[:16]}"
+    call_id = new_call_id()
     mandate = state.mandates(agent.id)
 
     # Only fetch facts for calls that could be allowed; never spend a PayPal call on a disallowed tool.
@@ -182,24 +246,7 @@ async def call_tool(ctx: ServerRequestContext, params: types.CallToolRequestPara
     now = state.clock()
     review_id = None
     with state.ledger.transaction():
-        snapshot = LedgerSnapshot()
-        if tool == "create_refund" and mandate is not None and mandate.refunds is not None:
-            snapshot = state.ledger.snapshot(mandate, customer_id, now)
-        decision = evaluate(
-            EvaluationInput(
-                agent=AgentView(agent.id, agent.active, agent.allowed_tools),
-                mandate=mandate,
-                tool=tool,
-                arguments=arguments,
-                session_customer=customer_id,
-                facts=facts,
-                ledger=snapshot,
-                known_customer_emails=state.known_customer_emails,
-                now=now,
-            )
-        )
-        if decision.outcome is Outcome.ALLOW and tool not in state.downstream.tools:
-            decision = Decision(Outcome.BLOCK, decision.checks, "E_TOOL_NOT_ALLOWED", codes=("E_TOOL_NOT_ALLOWED",))
+        decision = evaluate_locked(state, agent, mandate, tool, arguments, customer_id, facts, now)
         forward_args = _forward_arguments(tool, arguments, decision, mandate) if mandate else arguments
 
         if decision.outcome is Outcome.REVIEW:
@@ -210,24 +257,7 @@ async def call_tool(ctx: ServerRequestContext, params: types.CallToolRequestPara
             state.ledger.reserve(
                 call_id, mandate, agent.id, customer_id, arguments["capture_id"], decision.resolved_amount, now
             )
-        state.db.execute(
-            "INSERT INTO tool_calls (id, agent_id, customer_id, tool, arguments, decision, reason_code, codes, checks,"
-            " resolved_amount, review_id, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                call_id,
-                agent.id,
-                customer_id,
-                tool,
-                json.dumps(arguments),
-                decision.outcome.value,
-                decision.code,
-                json.dumps(list(decision.codes)),
-                json.dumps([check.__dict__ | {"result": check.result.value} for check in decision.checks]),
-                None if decision.resolved_amount is None else str(decision.resolved_amount),
-                review_id,
-                {"ALLOW": "PENDING", "REVIEW": "AWAITING_REVIEW", "BLOCK": "NOT_SENT"}[decision.outcome.value],
-            ),
-        )
+        record_call(state, call_id, agent.id, customer_id, tool, arguments, decision, review_id)
 
     if decision.outcome is Outcome.BLOCK:
         return block_result(call_id, decision)
@@ -273,7 +303,11 @@ async def forward(state: GatewayState, call_id: str, tool: str, arguments: dict)
     return result
 
 
-def build_server(db: sqlite3.Connection) -> Server[GatewayState]:
+def build_server(
+    db: sqlite3.Connection, on_state: Callable[[GatewayState | None], None] = lambda _: None
+) -> Server[GatewayState]:
+    """`on_state` is told the running state (and None at shutdown), for routes outside MCP."""
+
     @asynccontextmanager
     async def lifespan(_: Server) -> AsyncIterator[GatewayState]:
         settings = get_settings()
@@ -281,8 +315,13 @@ def build_server(db: sqlite3.Connection) -> Server[GatewayState]:
         downstream = PayPalDownstream(settings, tokens)
         async with anyio.create_task_group() as task_group:
             await task_group.start(downstream.run)
-            yield GatewayState(db=db, downstream=downstream, facts=FactsService(PayPalRest(settings, tokens)))
-            task_group.cancel_scope.cancel()
+            state = GatewayState(db=db, downstream=downstream, facts=FactsService(PayPalRest(settings, tokens)))
+            on_state(state)
+            try:
+                yield state
+            finally:
+                on_state(None)
+                task_group.cancel_scope.cancel()
 
     return Server(
         "intentguard",
@@ -296,34 +335,3 @@ def build_server(db: sqlite3.Connection) -> Server[GatewayState]:
         on_list_tools=list_tools,
         on_call_tool=call_tool,
     )
-
-
-class AgentAuthMiddleware:
-    """Rejects MCP requests without a valid agent key; attaches the Agent to the request scope."""
-
-    def __init__(self, app: ASGIApp, db: sqlite3.Connection):
-        self._app = app
-        self._db = db
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and scope["path"].startswith("/mcp"):
-            authorization = Request(scope).headers.get("authorization", "")
-            api_key = authorization.removeprefix("Bearer ").strip()
-            agent = registry.authenticate(self._db, api_key) if api_key else None
-            if agent is None or not agent.active:
-                response = JSONResponse({"error": "E_AGENT_UNKNOWN", "message": "Missing or invalid agent key."}, 401)
-                await response(scope, receive, send)
-                return
-            scope[AGENT_SCOPE_KEY] = agent
-        await self._app(scope, receive, send)
-
-
-async def health(_: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok"})
-
-
-def build_app(db: sqlite3.Connection | None = None, host: str = "127.0.0.1") -> ASGIApp:
-    db = db or store.connect()
-    server = build_server(db)
-    app = server.streamable_http_app(host=host, custom_starlette_routes=[Route("/health", health)])
-    return AgentAuthMiddleware(app, db)

@@ -1,11 +1,12 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { chat, Customer, Decision, getCustomers, getSession, login, Order, Turn } from "./api";
 
 type Item =
   | { id: number; type: "user"; text: string }
   | { id: number; type: "agent"; text: string; model: string; degraded: boolean }
   | { id: number; type: "check"; tool: string; amount: string | null; result?: Decision }
-  | { id: number; type: "error"; text: string };
+  | { id: number; type: "error"; text: string }
+  | { id: number; type: "notice"; text: string; tone: "ok" | "bad" | "neutral" };
 
 const TOOL_LABELS: Record<string, string> = {
   create_refund: "Refund",
@@ -17,6 +18,32 @@ let nextId = 1;
 
 function money(value: string | null | undefined) {
   return value ? `$${value}` : "";
+}
+
+/** A held refund is settled once the owner has decided and, if approved, PayPal has refunded it. */
+function settled(order: Order): boolean {
+  const review = order.review;
+  if (!review || review.status === "PENDING") return false;
+  return review.status !== "APPROVED" || order.refunded !== null;
+}
+
+/** What the store tells the customer when the owner decides on their held refund. */
+function decisionNotice(order: Order): { text: string; tone: "ok" | "bad" | "neutral" } {
+  const review = order.review!;
+  const amount = money(review.amount);
+  switch (review.status) {
+    case "APPROVED":
+      return { text: `Maya approved your refund of ${amount} for the ${order.item}. It's on its way to your PayPal account.`, tone: "ok" };
+    case "REJECTED":
+      return {
+        text: `Maya reviewed your refund request for the ${order.item} and declined it.${review.note ? ` Her note: "${review.note}"` : ""}`,
+        tone: "bad",
+      };
+    case "EXPIRED":
+      return { text: `Your refund request for the ${order.item} expired before it was reviewed. You're welcome to ask again.`, tone: "neutral" };
+    default:
+      return { text: `Your approved refund for the ${order.item} couldn't be completed. The store will contact you.`, tone: "bad" };
+  }
 }
 
 export default function App() {
@@ -31,18 +58,51 @@ export default function App() {
   const [compromised, setCompromised] = useState(false);
   const [showChecks, setShowChecks] = useState(true);
   const log = useRef<HTMLDivElement>(null);
+  // Held refunds seen on this page that the owner hadn't settled yet, so we tell the customer
+  // when that changes (and not about decisions made before they opened the chat).
+  const awaiting = useRef(new Set<string>());
 
-  const refresh = () =>
-    getSession().then((session) => {
-      setCustomer(session.customer);
-      setOrders(session.orders);
-      setSuggestions(session.suggestions);
-    });
+  const refresh = useCallback(
+    () =>
+      getSession().then((session) => {
+        setCustomer(session.customer);
+        setOrders(session.orders);
+        setSuggestions(session.suggestions);
+        for (const order of session.orders) {
+          const review = order.review;
+          if (!review) continue;
+          if (!settled(order)) {
+            awaiting.current.add(review.id);
+          } else if (awaiting.current.delete(review.id)) {
+            const notice = decisionNotice(order);
+            setItems((current) => [...current, { id: nextId++, type: "notice", ...notice }]);
+            // Let the agent know too, so a follow-up question gets a consistent answer.
+            setHistory((current) => {
+              const last = current[current.length - 1];
+              if (!last) return current;
+              const text = `[Store update] ${notice.text}`;
+              return last.role === "model"
+                ? [...current.slice(0, -1), { role: "model", text: `${last.text}\n\n${text}` }]
+                : [...current, { role: "model", text }];
+            });
+          }
+        }
+      }),
+    [],
+  );
+
+  // While a refund waits for the owner, check back every few seconds.
+  const waiting = orders.some((order) => order.review && !settled(order));
+  useEffect(() => {
+    if (!waiting) return;
+    const timer = setInterval(refresh, 4000);
+    return () => clearInterval(timer);
+  }, [waiting, refresh]);
 
   useEffect(() => {
     getCustomers().then(setCustomers);
     refresh();
-  }, []);
+  }, [refresh]);
 
   useEffect(() => {
     log.current?.scrollTo({ top: log.current.scrollHeight, behavior: "smooth" });
@@ -50,6 +110,7 @@ export default function App() {
 
   async function switchCustomer(id: string) {
     await login(id);
+    awaiting.current.clear();
     setItems([]);
     setHistory([]);
     setDraft("");
@@ -168,13 +229,7 @@ export default function App() {
                   </div>
                   <div className="order-side">
                     <span className="order-amount">{money(order.amount)}</span>
-                    {order.refunded ? (
-                      <span className="badge ok">Refunded {money(order.refunded)}</span>
-                    ) : order.pending_review ? (
-                      <span className="badge wait">Refund awaiting approval</span>
-                    ) : (
-                      <span className="badge">Paid</span>
-                    )}
+                    <OrderBadge order={order} />
                   </div>
                 </li>
               ))}
@@ -204,6 +259,13 @@ export default function App() {
                     </div>
                   );
                 if (item.type === "error") return <div key={item.id} className="bubble error">{item.text}</div>;
+                if (item.type === "notice")
+                  return (
+                    <div key={item.id} className={`notice ${item.tone}`} role="status">
+                      <span className="notice-from">Maya's Pottery</span>
+                      {item.text}
+                    </div>
+                  );
                 return showChecks ? <Check key={item.id} item={item} /> : null;
               })}
               {busy && !items.some((item) => item.type === "check" && !item.result) && (
@@ -240,6 +302,15 @@ export default function App() {
       )}
     </div>
   );
+}
+
+function OrderBadge({ order }: { order: Order }) {
+  if (order.refunded) return <span className="badge ok">Refunded {money(order.refunded)}</span>;
+  const status = order.review?.status;
+  if (status === "PENDING" || status === "APPROVED") return <span className="badge wait">Refund awaiting approval</span>;
+  if (status === "REJECTED") return <span className="badge bad">Refund declined</span>;
+  if (status === "FAILED") return <span className="badge bad">Refund not completed</span>;
+  return <span className="badge">Paid</span>;
 }
 
 function Check({ item }: { item: Extract<Item, { type: "check" }> }) {

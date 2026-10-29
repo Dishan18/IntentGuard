@@ -98,8 +98,9 @@ def _order_status(db: sqlite3.Connection, order: dict) -> dict:
         )),
         Decimal("0"),
     )
-    pending = db.execute(
-        "SELECT amount FROM reviews WHERE status = 'PENDING' AND json_extract(arguments, '$.capture_id') = ?",
+    review = db.execute(
+        "SELECT id, status, amount, note FROM reviews WHERE json_extract(arguments, '$.capture_id') = ?"
+        " ORDER BY created_at DESC LIMIT 1",
         (order["capture_id"],),
     ).fetchone()
     return {
@@ -108,7 +109,8 @@ def _order_status(db: sqlite3.Connection, order: dict) -> dict:
         "amount": order["amount"],
         "currency": order.get("currency", "USD"),
         "refunded": f"{refunded:.2f}" if refunded else None,
-        "pending_review": pending["amount"] if pending else None,
+        # The latest refund request the owner had to decide on, so the chat can tell the customer.
+        "review": dict(review) if review else None,
     }
 
 

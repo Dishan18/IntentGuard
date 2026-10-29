@@ -154,8 +154,9 @@ async def test_order_shows_committed_refunds_and_pending_reviews(db):
         [ben] = (await http.get("/api/session")).json()["orders"]
         http.cookies.set(SESSION_COOKIE, "cust_carla")
         [carla] = (await http.get("/api/session")).json()["orders"]
-    assert (ben["refunded"], ben["pending_review"]) == ("20.00", None)
-    assert (carla["refunded"], carla["pending_review"]) == (None, "160.00")
+    assert (ben["refunded"], ben["review"]) == ("20.00", None)
+    assert carla["refunded"] is None
+    assert carla["review"] == {"id": "rv1", "status": "PENDING", "amount": "160.00", "note": None}
 
 
 @pytest.mark.anyio

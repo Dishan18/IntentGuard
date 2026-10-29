@@ -6,7 +6,8 @@ export type Order = {
   amount: string;
   currency: string;
   refunded: string | null;
-  pending_review: string | null;
+  /** The latest refund request for this order that needed the owner's approval. */
+  review: { id: string; status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED" | "FAILED"; amount: string | null; note: string | null } | null;
 };
 
 export type Session = { customer: Customer | null; orders: Order[]; suggestions: string[] };

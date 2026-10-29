@@ -21,6 +21,10 @@ from intentguard.policy.models import LedgerSnapshot, Mandate
 # PayPal executed a refund, assume it did.
 SPENT = ("RESERVED", "COMMITTED", "UNKNOWN")
 
+# A review the owner hasn't decided within this time expires: it stops counting toward the
+# customer's refund limit and can no longer be approved (the customer can simply ask again).
+REVIEW_TTL = timedelta(hours=72)
+
 
 def _iso(moment: datetime) -> str:
     return moment.isoformat(timespec="milliseconds")
@@ -135,3 +139,29 @@ class Reviews:
             ),
         )
         return review_id
+
+    def get(self, review_id: str) -> sqlite3.Row | None:
+        return self._db.execute("SELECT * FROM reviews WHERE id = ?", (review_id,)).fetchone()
+
+    def expire_stale(self, now: datetime) -> int:
+        cursor = self._db.execute(
+            "UPDATE reviews SET status = 'EXPIRED', resolved_at = ?, resolved_by = 'system'"
+            " WHERE status = 'PENDING' AND created_at < ?",
+            (_iso(now), _iso(now - REVIEW_TTL)),
+        )
+        return cursor.rowcount
+
+    def resolve(
+        self,
+        review_id: str,
+        status: str,
+        now: datetime,
+        owner: str | None = None,
+        note: str | None = None,
+        execution_call_id: str | None = None,
+    ) -> None:
+        self._db.execute(
+            "UPDATE reviews SET status = ?, resolved_at = ?, resolved_by = COALESCE(?, resolved_by),"
+            " note = COALESCE(?, note), execution_call_id = COALESCE(?, execution_call_id) WHERE id = ?",
+            (status, _iso(now), owner, note, execution_call_id, review_id),
+        )
