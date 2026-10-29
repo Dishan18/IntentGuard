@@ -12,7 +12,7 @@ Small merchants are giving AI agents access to their PayPal account so they can 
 ## Repository layout
 
 ```text
-backend/intentguard/   Python package: config, PayPal clients, gateway (policy engine, ledger), agents, demo store API
+backend/intentguard/   Python package: config, PayPal clients, gateway (policy engine, ledger, owner reviews), agents, demo store API
 apps/store/            React demo store with the customer chat
 paypal-mcp/            Pinned PayPal MCP server, spawned by the gateway as its downstream
 scripts/               Dev scripts (tool catalog, sandbox seeding)
@@ -131,6 +131,24 @@ Each agent only sees and can only call the PayPal tools in its allowlist. Every 
   ```
   `retryable` is true only when the agent can fix its own request (a malformed amount, a wrong ID, or PayPal temporarily unreachable). Limit and ownership blocks aren't retryable: the agent should hand off to a person, not look for an amount that slips through.
 - **REVIEW:** not an error. The exact call (with the amount filled in) is queued for the owner. `{"decision": "REVIEW", "status": "PENDING_OWNER_APPROVAL", "review_id": "rv_…", "paypal_call": "NOT_SENT_YET", …}`
+
+## Owner approval (REVIEW)
+
+When a request is held, the owner decides. Approving executes the **stored** request (the exact call that was held, with its resolved amount), never a new one from the agent. Before it's sent, it is checked again with fresh PayPal facts and the current ledger, in one transaction:
+
+- the approval covers the review reasons the owner was shown (for example `R_ABOVE_AUTO_LIMIT`), and nothing new;
+- hard rules still apply: if the payment was refunded elsewhere meanwhile, the daily cap is used up, or the agent was revoked, the review becomes `FAILED` and nothing is sent;
+- a review can be approved once, even if the button is clicked twice at the same moment; reviews not decided within 72 hours expire.
+
+The owner API lives on the gateway at `/owner/reviews` and uses an **owner key**, separate from agent keys: an agent key gets `401` there, so an agent can never approve its own request. From a terminal:
+
+```bash
+backend/.venv/Scripts/python scripts/reviews.py                       # what's waiting
+backend/.venv/Scripts/python scripts/reviews.py approve rv_… --note "Wrong colour is on us"
+backend/.venv/Scripts/python scripts/reviews.py reject rv_… --note "Please return the set first"
+```
+
+The store checks back while a refund is waiting, then tells the customer in the chat: approved (once PayPal has refunded it), declined with the owner's note, or expired.
 
 ### Ledger
 

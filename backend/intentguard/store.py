@@ -71,13 +71,21 @@ CREATE TABLE IF NOT EXISTS reviews (
     arguments   TEXT NOT NULL,            -- JSON, with the resolved amount filled in
     amount      TEXT,
     codes       TEXT NOT NULL,            -- JSON
-    status      TEXT NOT NULL,            -- PENDING | APPROVED | REJECTED | EXPIRED
+    status      TEXT NOT NULL,            -- PENDING | APPROVED | REJECTED | EXPIRED | FAILED
     created_at  TEXT NOT NULL,
     resolved_at TEXT,
     resolved_by TEXT,
     note        TEXT
 );
 CREATE INDEX IF NOT EXISTS reviews_pending ON reviews (status, mandate_id, customer_id);
+
+-- Keys for the store owner's API (review queue). Separate from agent keys, so an agent key can
+-- never approve its own requests.
+CREATE TABLE IF NOT EXISTS owner_keys (
+    key_hash   TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 """
 
 # Columns added after the first schema; applied to existing databases on connect.
@@ -87,6 +95,9 @@ ADDED_COLUMNS = {
         "checks": "TEXT",
         "resolved_amount": "TEXT",
         "review_id": "TEXT",
+    },
+    "reviews": {
+        "execution_call_id": "TEXT",  # the tool_calls row that executed the approved request
     },
 }
 

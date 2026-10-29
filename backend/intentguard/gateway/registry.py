@@ -46,7 +46,14 @@ def register(
 
 
 def authenticate(db: sqlite3.Connection, api_key: str) -> Agent | None:
-    row = db.execute("SELECT * FROM agents WHERE key_hash = ?", (hash_key(api_key),)).fetchone()
+    return _agent(db.execute("SELECT * FROM agents WHERE key_hash = ?", (hash_key(api_key),)).fetchone())
+
+
+def get(db: sqlite3.Connection, agent_id: str) -> Agent | None:
+    return _agent(db.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone())
+
+
+def _agent(row: sqlite3.Row | None) -> Agent | None:
     if row is None:
         return None
     return Agent(
@@ -57,3 +64,16 @@ def authenticate(db: sqlite3.Connection, api_key: str) -> Agent | None:
         allowed_tools=frozenset(json.loads(row["allowed_tools"])),
         status=row["status"],
     )
+
+
+def register_owner(db: sqlite3.Connection, name: str) -> str:
+    """Create (or replace) a key for the store owner's API (review decisions). Returns the key once."""
+    owner_key = f"igo_{secrets.token_urlsafe(24)}"
+    db.execute("DELETE FROM owner_keys WHERE name = ?", (name,))
+    db.execute("INSERT INTO owner_keys (key_hash, name) VALUES (?, ?)", (hash_key(owner_key), name))
+    return owner_key
+
+
+def authenticate_owner(db: sqlite3.Connection, owner_key: str) -> str | None:
+    row = db.execute("SELECT name FROM owner_keys WHERE key_hash = ?", (hash_key(owner_key),)).fetchone()
+    return row["name"] if row else None

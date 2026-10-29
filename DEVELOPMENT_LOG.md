@@ -165,3 +165,33 @@ Next (Day 6): store web UI with the customer chat (scenarios A and B in the brow
 - **Tests: 100 passing.** New: store API (login, orders scoped to the customer, customer from session not body, SSE event order and payloads, error events, request validation, order status from ledger and reviews, demo prompt IDs), agent listeners, Gemini cooldown and timeout fallback, gateway disconnect mid-refund.
 
 Next (Day 7): review flow. The owner approves or rejects a held refund, the stored call is executed, and the chat/order status updates (scenario C).
+
+## 2026-10-29 — Day 7: owner approval for held refunds (scenario C)
+
+- **Owner API on the gateway** (`gateway/owner.py`): `GET /owner/reviews[?status=]`, `POST /owner/reviews/{id}/approve`, `POST /owner/reviews/{id}/reject`, each with an optional note.
+  - Authenticated with an **owner key** (`owner_keys` table, hash only), separate from agent keys. An agent key gets 401 on `/owner`, and an owner key gets 401 on `/mcp`, so an agent can't approve its own request.
+  - `register_agents.py` now also writes an `owner` key. `scripts/reviews.py` lists, approves and rejects from a terminal.
+- **Approval executes the stored request**, re-checked in one `BEGIN IMMEDIATE` transaction with **fresh PayPal facts** and the current ledger:
+  - The review is re-read under the write lock, so double clicks and concurrent approvals execute once (test: 5 concurrent approvals → one 200, four 409, one PayPal call).
+  - The review is marked APPROVED *before* the ledger snapshot, so it doesn't count against its own one-refund-per-customer limit.
+  - The approval covers only the review codes the owner saw. A new review reason means `E_REVIEW_CHANGED`, not executed.
+  - Hard rules still apply. A capture refunded elsewhere, a daily cap used up, or a revoked agent means status `FAILED` and nothing is sent.
+  - The execution is its own audit row (`review_id` set, linked from `reviews.execution_call_id`). The held row's outcome becomes `REVIEW_APPROVED` / `REVIEW_REJECTED`.
+  - A PayPal error on execution releases the reservation and marks the review FAILED.
+- **Expiry:** reviews not decided within 72 h expire. They are swept before every refund snapshot and owner listing, so an abandoned review stops counting toward the customer's limit.
+- **Refactor:** `call_tool`'s evaluate and audit steps are now `evaluate_locked()` and `record_call()`, shared with approval. The HTTP app and auth moved to `gateway/app.py`. `build_server` reports the running state so non-MCP routes can use it.
+- **Store:** each order carries its latest review (status, amount, owner note). While a refund is waiting, the page checks every 4 s, then posts a notice in the chat: approved (only once the ledger shows the refund committed), declined with the owner's note, expired, or failed. The notice is also added to the agent's history.
+- **Live run (scenario C)**, real Gemini, gateway, sandbox:
+
+  ```text
+  Carla: "My dinner set arrived in the wrong colour…"   Refund $160.00 -> Held for the owner's approval
+                                                       (R_ABOVE_AUTO_LIMIT), PayPal call not sent yet
+  scripts/reviews.py approve rv_bfb5… --note "Wrong colour is on us"
+     -> re-checked, APPROVED, PayPal refund 2C136657TJ940405F COMPLETED
+  Carla's page, ~4 s later: order "Refunded $160.00" + chat notice "Maya approved your refund of $160.00…"
+  ```
+
+  In that run Gemini failed on the turn's second call, so Carla got the degraded reply ("sent to the store owner… hasn't been processed yet"), which was correct. The failure wasn't a 503 or a timeout, so it left no log line. `SupportAgent` now logs why a turn degraded.
+- **Tests: 116 passing.** 16 new owner tests: approve end-to-end, frequency self-exclusion, approve once, concurrent approvals, fresh-facts re-check, daily cap at approval time, reasons-covered rule, revoked agent, PayPal error, reject, expiry, listing, HTTP key separation, 503 before ready, owner re-key. Mutation checks: dropping the re-read under the lock fails the concurrency test; marking approved after the snapshot fails 7 tests.
+
+Next (Day 8): PayPal webhooks plus a poller, so refund status comes from PayPal events (PENDING → COMPLETED) rather than only the API response.

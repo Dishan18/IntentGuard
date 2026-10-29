@@ -352,6 +352,42 @@ code {
   color: var(--muted);
 }
 
+.notice {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 14px;
+}
+
+.notice-from {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.notice.ok {
+  border-color: var(--ok);
+}
+
+.notice.ok .notice-from {
+  color: var(--ok);
+}
+
+.notice.bad {
+  border-color: var(--bad);
+}
+
+.notice.bad .notice-from {
+  color: var(--bad);
+}
+
 .check {
   align-self: stretch;
   display: flex;

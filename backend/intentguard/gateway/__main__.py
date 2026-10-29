@@ -4,7 +4,7 @@ import argparse
 
 import uvicorn
 
-from intentguard.gateway.server import build_app
+from intentguard.gateway.app import build_app
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--host", default="127.0.0.1")

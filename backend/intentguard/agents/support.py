@@ -9,6 +9,7 @@ decided by the gateway's policy, not by how well the model resists a persuasive 
 """
 
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
@@ -17,6 +18,8 @@ from mcp import ClientSession
 
 from intentguard.agents.llm import GeminiClient, LLMUnavailable, tool_declaration
 from intentguard.gateway.client import DEFAULT_GATEWAY_URL, gateway_session
+
+log = logging.getLogger("intentguard.agents")
 
 SessionFactory = Callable[[str, str | None, str], AbstractAsyncContextManager[ClientSession]]
 ToolStartListener = Callable[[str, dict], Awaitable[None]]
@@ -172,7 +175,8 @@ class SupportAgent:
             for _ in range(self._max_tool_steps + 1):
                 try:
                     generation = await self._llm.generate(system, contents, tools, pin_model=model)
-                except LLMUnavailable:
+                except LLMUnavailable as error:
+                    log.warning("LLM unavailable mid-turn (model %s, %d tool calls so far): %s", model, len(events), error)
                     return AgentReply(_fallback_text(events), model or "", events, degraded=True)
                 model = generation.model
                 contents.append(generation.content)
