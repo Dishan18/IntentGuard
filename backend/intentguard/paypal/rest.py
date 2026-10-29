@@ -53,3 +53,29 @@ class PayPalRest:
 
     def get_invoice(self, invoice_id: str) -> dict:
         return self._request("GET", f"/v2/invoicing/invoices/{invoice_id}")
+
+    # ------------------------------------------------------------ webhooks
+
+    def verify_webhook_signature(self, webhook_id: str, headers: dict[str, str], event: dict) -> bool:
+        """Ask PayPal whether a delivery really came from PayPal for this webhook."""
+        body = {
+            "auth_algo": headers.get("paypal-auth-algo", ""),
+            "cert_url": headers.get("paypal-cert-url", ""),
+            "transmission_id": headers.get("paypal-transmission-id", ""),
+            "transmission_sig": headers.get("paypal-transmission-sig", ""),
+            "transmission_time": headers.get("paypal-transmission-time", ""),
+            "webhook_id": webhook_id,
+            "webhook_event": event,
+        }
+        result = self._request("POST", "/v1/notifications/verify-webhook-signature", json=body)
+        return result.get("verification_status") == "SUCCESS"
+
+    def list_webhooks(self) -> list[dict]:
+        return self._request("GET", "/v1/notifications/webhooks").get("webhooks", [])
+
+    def create_webhook(self, url: str, event_types: list[str]) -> dict:
+        body = {"url": url, "event_types": [{"name": name} for name in event_types]}
+        return self._request("POST", "/v1/notifications/webhooks", json=body)
+
+    def delete_webhook(self, webhook_id: str) -> None:
+        self._request("DELETE", f"/v1/notifications/webhooks/{webhook_id}")

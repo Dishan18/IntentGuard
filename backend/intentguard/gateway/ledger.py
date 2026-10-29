@@ -21,6 +21,9 @@ from intentguard.policy.models import LedgerSnapshot, Mandate
 # PayPal executed a refund, assume it did.
 SPENT = ("RESERVED", "COMMITTED", "UNKNOWN")
 
+# PayPal refund statuses where no money went back to the customer.
+NOT_REFUNDED = ("FAILED", "CANCELLED")
+
 # A review the owner hasn't decided within this time expires: it stops counting toward the
 # customer's refund limit and can no longer be approved (the customer can simply ask again).
 REVIEW_TTL = timedelta(hours=72)
@@ -88,21 +91,61 @@ class Ledger:
             (call_id, mandate.id, agent_id, customer_id, capture_id, str(amount), now.date().isoformat(), _iso(now), _iso(now)),
         )
 
-    def _settle(self, call_id: str, status: str, now: datetime, refund_id: str | None = None) -> None:
+    def _settle(
+        self, call_id: str, status: str, now: datetime, refund_id: str | None = None, paypal_status: str | None = None
+    ) -> None:
         self._db.execute(
-            "UPDATE refund_ledger SET status = ?, refund_id = COALESCE(?, refund_id), updated_at = ?"
-            " WHERE call_id = ? AND status = 'RESERVED'",
-            (status, refund_id, _iso(now), call_id),
+            "UPDATE refund_ledger SET status = ?, refund_id = COALESCE(?, refund_id),"
+            " paypal_status = COALESCE(?, paypal_status), updated_at = ? WHERE call_id = ? AND status = 'RESERVED'",
+            (status, refund_id, paypal_status, _iso(now), call_id),
         )
 
-    def commit(self, call_id: str, refund_id: str | None, now: datetime) -> None:
-        self._settle(call_id, "COMMITTED", now, refund_id)
+    def commit(self, call_id: str, refund_id: str | None, now: datetime, paypal_status: str | None = None) -> None:
+        self._settle(call_id, "COMMITTED", now, refund_id, paypal_status)
 
     def release(self, call_id: str, now: datetime) -> None:
         self._settle(call_id, "RELEASED", now)
 
     def mark_unknown(self, call_id: str, now: datetime) -> None:
         self._settle(call_id, "UNKNOWN", now)
+
+    # ------------------------------------------------------------ reconciliation (PayPal is the source of truth)
+
+    def apply_paypal_status(self, call_id: str, refund_id: str, paypal_status: str, now: datetime) -> str | None:
+        """Bring a COMMITTED or UNKNOWN entry in line with what PayPal reports for its refund.
+        A refund PayPal says FAILED or CANCELLED moved no money, so it stops counting as spent.
+        Returns the new ledger status if it changed."""
+        row = self._db.execute("SELECT status, paypal_status FROM refund_ledger WHERE call_id = ?", (call_id,)).fetchone()
+        if row is None or row["status"] not in ("COMMITTED", "UNKNOWN"):
+            return None
+        status = "RELEASED" if paypal_status in NOT_REFUNDED else "COMMITTED"
+        if (status, paypal_status) == (row["status"], row["paypal_status"]):
+            return None
+        self._db.execute(
+            "UPDATE refund_ledger SET status = ?, refund_id = ?, paypal_status = ?, updated_at = ? WHERE call_id = ?",
+            (status, refund_id, paypal_status, _iso(now), call_id),
+        )
+        return status
+
+    def release_unknown(self, call_id: str, now: datetime) -> bool:
+        """For an UNKNOWN entry when PayPal has no refund carrying this call's ID: nothing was refunded."""
+        cursor = self._db.execute(
+            "UPDATE refund_ledger SET status = 'RELEASED', paypal_status = 'NOT_FOUND', updated_at = ?"
+            " WHERE call_id = ? AND status = 'UNKNOWN'",
+            (_iso(now), call_id),
+        )
+        return cursor.rowcount == 1
+
+    def needing_reconciliation(self) -> list[sqlite3.Row]:
+        """Entries whose outcome isn't final: UNKNOWN, or a refund PayPal still reports as pending."""
+        return self._db.execute(
+            "SELECT * FROM refund_ledger WHERE status = 'UNKNOWN'"
+            " OR (status = 'COMMITTED' AND (paypal_status IS NULL OR paypal_status = 'PENDING'))"
+            " ORDER BY created_at"
+        ).fetchall()
+
+    def by_refund_id(self, refund_id: str) -> sqlite3.Row | None:
+        return self._db.execute("SELECT * FROM refund_ledger WHERE refund_id = ?", (refund_id,)).fetchone()
 
 
 class Reviews:

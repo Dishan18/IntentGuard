@@ -74,6 +74,11 @@ class FactsService:
             captured_at=datetime.fromisoformat(capture["create_time"]),
         )
 
+    def refunds_for_capture(self, capture_id: str) -> list[dict]:
+        """Every refund PayPal has on a capture, in any status. Raises PayPalAPIError."""
+        order_id = _last_segment(_link(self._paypal.get_capture(capture_id), "up"))
+        return self._refunds_for_capture(order_id, capture_id) if order_id else []
+
     def _refunds_for_capture(self, order_id: str, capture_id: str) -> list[dict]:
         order = self._paypal.get_order(order_id)
         return [

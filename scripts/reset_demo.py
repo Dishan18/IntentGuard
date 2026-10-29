@@ -17,7 +17,7 @@ from intentguard import store  # noqa: E402
 
 if __name__ == "__main__":
     db = store.connect()
-    for table in ("refund_ledger", "reviews", "tool_calls"):
+    for table in ("refund_ledger", "reviews", "tool_calls", "webhook_events"):
         deleted = db.execute(f"DELETE FROM {table}").rowcount
         print(f"cleared {table}: {deleted} rows")
     print("seeding fresh orders...")

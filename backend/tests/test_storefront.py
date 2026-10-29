@@ -139,10 +139,10 @@ async def test_bad_chat_requests_are_rejected(db, payload):
 @pytest.mark.anyio
 async def test_order_shows_committed_refunds_and_pending_reviews(db):
     db.execute(
-        "INSERT INTO refund_ledger VALUES ('c1','m','a','cust_ben','CAP_BEN','20.00','COMMITTED','R1','2026-10-29','t','t')"
+        "INSERT INTO refund_ledger (call_id, mandate_id, agent_id, customer_id, capture_id, amount, status, refund_id, day, created_at, updated_at) VALUES ('c1','m','a','cust_ben','CAP_BEN','20.00','COMMITTED','R1','2026-10-29','t','t')"
     )
     db.execute(
-        "INSERT INTO refund_ledger VALUES ('c2','m','a','cust_ben','CAP_BEN','5.00','RELEASED',NULL,'2026-10-29','t','t')"
+        "INSERT INTO refund_ledger (call_id, mandate_id, agent_id, customer_id, capture_id, amount, status, refund_id, day, created_at, updated_at) VALUES ('c2','m','a','cust_ben','CAP_BEN','5.00','RELEASED',NULL,'2026-10-29','t','t')"
     )
     db.execute(
         "INSERT INTO reviews (id, call_id, mandate_id, agent_id, customer_id, tool, arguments, amount, codes, status, created_at)"
@@ -175,3 +175,18 @@ async def test_demo_prompts_quote_carlas_real_transaction_id(db):
         await http.post("/api/session", json={"customer_id": "cust_ben"})
         suggestions = (await http.get("/api/session")).json()["suggestions"]
     assert len(suggestions) == 2 and "CAP_CARLA" in suggestions[1]
+
+
+@pytest.mark.anyio
+async def test_order_status_follows_paypals_refund_status(db):
+    cols = ("INSERT INTO refund_ledger (call_id, mandate_id, agent_id, customer_id, capture_id, amount, status,"
+            " refund_id, paypal_status, day, created_at, updated_at) VALUES (?, 'm', 'a', ?, ?, ?, ?, ?, ?, 'd', 't', 't')")
+    db.execute(cols, ("c1", "cust_ben", "CAP_BEN", "42.00", "COMMITTED", "R1", "PENDING"))
+    db.execute(cols, ("c2", "cust_carla", "CAP_CARLA", "160.00", "RELEASED", "R2", "FAILED"))
+    async with client(db, FakeAgent()) as http:
+        http.cookies.set(SESSION_COOKIE, "cust_ben")
+        [ben] = (await http.get("/api/session")).json()["orders"]
+        http.cookies.set(SESSION_COOKIE, "cust_carla")
+        [carla] = (await http.get("/api/session")).json()["orders"]
+    assert (ben["refunded"], ben["refund_processing"], ben["refund_failed"]) == (None, "42.00", False)
+    assert (carla["refunded"], carla["refund_processing"], carla["refund_failed"]) == (None, None, True)

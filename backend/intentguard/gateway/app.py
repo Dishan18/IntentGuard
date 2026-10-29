@@ -1,4 +1,5 @@
-"""The gateway's HTTP app: MCP for agents at /mcp, the owner's review API at /owner, and /health."""
+"""The gateway's HTTP app: MCP for agents at /mcp, the owner's review API at /owner, PayPal
+webhooks at /webhooks/paypal (verified by signature, not by key), and /health."""
 
 import sqlite3
 
@@ -8,7 +9,7 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from intentguard import store
-from intentguard.gateway import owner, registry
+from intentguard.gateway import owner, registry, webhooks
 from intentguard.gateway.server import AGENT_SCOPE_KEY, GatewayState, build_server
 
 
@@ -57,6 +58,11 @@ def build_app(db: sqlite3.Connection | None = None, host: str = "127.0.0.1") -> 
 
     server = build_server(db, on_state)
     app = server.streamable_http_app(
-        host=host, custom_starlette_routes=[Route("/health", health), *owner.routes(lambda: running[0])]
+        host=host,
+        custom_starlette_routes=[
+            Route("/health", health),
+            *owner.routes(lambda: running[0]),
+            *webhooks.routes(lambda: running[0]),
+        ],
     )
     return AuthMiddleware(app, db)

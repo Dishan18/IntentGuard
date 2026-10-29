@@ -24,7 +24,7 @@ function money(value: string | null | undefined) {
 function settled(order: Order): boolean {
   const review = order.review;
   if (!review || review.status === "PENDING") return false;
-  return review.status !== "APPROVED" || order.refunded !== null;
+  return review.status !== "APPROVED" || order.refunded !== null || order.refund_processing !== null || order.refund_failed;
 }
 
 /** What the store tells the customer when the owner decides on their held refund. */
@@ -33,6 +33,8 @@ function decisionNotice(order: Order): { text: string; tone: "ok" | "bad" | "neu
   const amount = money(review.amount);
   switch (review.status) {
     case "APPROVED":
+      if (order.refund_failed)
+        return { text: `Maya approved your refund for the ${order.item}, but PayPal couldn't complete it. The store will contact you.`, tone: "bad" };
       return { text: `Maya approved your refund of ${amount} for the ${order.item}. It's on its way to your PayPal account.`, tone: "ok" };
     case "REJECTED":
       return {
@@ -306,6 +308,8 @@ export default function App() {
 
 function OrderBadge({ order }: { order: Order }) {
   if (order.refunded) return <span className="badge ok">Refunded {money(order.refunded)}</span>;
+  if (order.refund_processing) return <span className="badge wait">Refund processing {money(order.refund_processing)}</span>;
+  if (order.refund_failed) return <span className="badge bad">Refund failed</span>;
   const status = order.review?.status;
   if (status === "PENDING" || status === "APPROVED") return <span className="badge wait">Refund awaiting approval</span>;
   if (status === "REJECTED") return <span className="badge bad">Refund declined</span>;

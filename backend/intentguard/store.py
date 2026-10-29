@@ -81,6 +81,15 @@ CREATE INDEX IF NOT EXISTS reviews_pending ON reviews (status, mandate_id, custo
 
 -- Keys for the store owner's API (review queue). Separate from agent keys, so an agent key can
 -- never approve its own requests.
+-- PayPal webhook deliveries. The event ID is the key, so a redelivered event is processed once.
+CREATE TABLE IF NOT EXISTS webhook_events (
+    id           TEXT PRIMARY KEY,
+    event_type   TEXT NOT NULL,
+    resource_id  TEXT,
+    received_at  TEXT NOT NULL,
+    result       TEXT                     -- what reconciliation did, as JSON
+);
+
 CREATE TABLE IF NOT EXISTS owner_keys (
     key_hash   TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
@@ -98,6 +107,9 @@ ADDED_COLUMNS = {
     },
     "reviews": {
         "execution_call_id": "TEXT",  # the tool_calls row that executed the approved request
+    },
+    "refund_ledger": {
+        "paypal_status": "TEXT",  # PayPal's refund status: COMPLETED | PENDING | FAILED | CANCELLED | NOT_FOUND
     },
 }
 

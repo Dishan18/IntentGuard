@@ -53,10 +53,12 @@ async def test_approval_executes_the_stored_request_and_settles_everything(db):
     status, result = await owner.approve(state, review_id, "maya", "Wrong colour, fair enough")
 
     assert status == 200 and result["status"] == "APPROVED" and result["paypal"]["status"] == "COMPLETED"
-    assert state.downstream.calls == [
-        ("create_refund", {"capture_id": "CAP_CARLA", "amount": {"currency_code": "USD", "value": "160.00"}})
-    ]
     review = row(db, "SELECT * FROM reviews WHERE id = ?", review_id)
+    assert state.downstream.calls == [(
+        "create_refund",
+        {"capture_id": "CAP_CARLA", "amount": {"currency_code": "USD", "value": "160.00"},
+         "invoice_id": review["execution_call_id"]},
+    )]
     assert (review["status"], review["resolved_by"], review["note"]) == ("APPROVED", "maya", "Wrong colour, fair enough")
     executed = row(db, "SELECT * FROM tool_calls WHERE id = ?", review["execution_call_id"])
     assert (executed["decision"], executed["outcome"], executed["review_id"]) == ("ALLOW", "OK", review_id)
@@ -123,7 +125,7 @@ async def test_approval_respects_the_daily_cap_as_it_is_now(db):
     state = make_state(db, facts=FakeFacts([carla_capture()]))
     review_id = await held_refund(state, db)
     db.execute(
-        "INSERT INTO refund_ledger VALUES ('other','mnd_support','support-agent','cust_dev','CAP_X','200.00',"
+        "INSERT INTO refund_ledger (call_id, mandate_id, agent_id, customer_id, capture_id, amount, status, refund_id, day, created_at, updated_at) VALUES ('other','mnd_support','support-agent','cust_dev','CAP_X','200.00',"
         "'COMMITTED','R9',?,?,?)",
         (NOW.date().isoformat(), NOW.isoformat(), NOW.isoformat()),
     )

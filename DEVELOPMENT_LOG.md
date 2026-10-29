@@ -195,3 +195,30 @@ Next (Day 7): review flow. The owner approves or rejects a held refund, the stor
 - **Tests: 116 passing.** 16 new owner tests: approve end-to-end, frequency self-exclusion, approve once, concurrent approvals, fresh-facts re-check, daily cap at approval time, reasons-covered rule, revoked agent, PayPal error, reject, expiry, listing, HTTP key separation, 503 before ready, owner re-key. Mutation checks: dropping the re-read under the lock fails the concurrency test; marking approved after the snapshot fails 7 tests.
 
 Next (Day 8): PayPal webhooks plus a poller, so refund status comes from PayPal events (PENDING → COMPLETED) rather than only the API response.
+
+## 2026-10-29 — Day 8: webhooks, poller and reconciliation with PayPal
+
+- **Refunds are traceable to the call that made them.** `forward()` sets PayPal's `invoice_id` to the IntentGuard call ID on every refund. I checked the toolkit source (`createRefund` posts all tool arguments as the body) and confirmed live: PayPal stores it on the refund and returns it in the order's refund list.
+- **Ledger tracks PayPal's status** (`refund_ledger.paypal_status`), set from the create_refund response and then kept current.
+- **Reconciler** (`gateway/reconcile.py`), PayPal as the source of truth:
+  - `UNKNOWN` → look for a refund on the capture with `invoice_id == call_id`. Found: COMMITTED with refund ID and status. Not found after a 10-minute grace period: RELEASED (`NOT_FOUND`), and it stops counting toward limits.
+  - COMMITTED refunds that are PENDING, or that have no status yet, are re-read until final. FAILED or CANCELLED: RELEASED, no longer counted as spent.
+  - PayPal reads happen outside the write lock; each update is one short `BEGIN IMMEDIATE` transaction.
+- **Poller:** a task in the gateway's lifespan runs a pass at startup (catching anything left UNKNOWN by a crash), then every `RECONCILE_INTERVAL_S` (60 s). `scripts/reconcile.py` runs a pass by hand.
+- **Webhook receiver** (`POST /webhooks/paypal`, `gateway/webhooks.py`):
+  - **Verified** with PayPal's `verify-webhook-signature` against `PAYPAL_WEBHOOK_ID`. With no ID configured, every delivery is refused (503).
+  - **Idempotent** by event ID (`webhook_events` table). A delivery is recorded only after it's processed, so a failure returns 500 and PayPal's retry processes it.
+  - **The payload is only a pointer.** The refund's status is read from PayPal's API. Test: a payload claiming FAILED for a refund PayPal says is COMPLETED leaves it COMPLETED.
+  - Handles `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.REFUND.PENDING` and `PAYMENT.REFUND.FAILED`, whether the resource is the refund or the capture. Refunds made outside IntentGuard are logged as `external`. Other event types are acknowledged and ignored.
+  - `scripts/register_webhook.py` registers, lists and deletes the sandbox webhook. It needs a public HTTPS URL.
+- **Store:** orders show "Refund processing $X" (PayPal PENDING), "Refunded $X", or "Refund failed", and the approval notice waits for PayPal's outcome.
+- **Logging:** the gateway and store now log at INFO (reconciliations, webhooks, LLM fallbacks).
+- **Live checks** (sandbox, no webhook yet):
+  - `scripts/reconcile.py` filled in PayPal status COMPLETED for the two refunds from Days 6–7.
+  - Ben's $19 bowl refund through the agent (ALLOW, COMPLETED). PayPal returned `invoice_id = call_6f91…` both on the refund and in the order listing.
+  - **Lost-response drill:** I set that entry to UNKNOWN with no refund ID, as the gateway does after a timeout. The gateway's own poller flipped it back to COMMITTED / `87Y17112AC119123R` / COMPLETED within one interval.
+  - `POST /webhooks/paypal` without a configured webhook ID → 503.
+- **Not done yet:** real webhook deliveries. PayPal needs a public HTTPS URL, and there is no tunnel tool on this machine. They'll work once the gateway is deployed (Day 14) or a tunnel is opened. Everything after the signature check is covered by tests and the live poller run.
+- **Tests: 134 passing.** 17 new reconcile/webhook tests and 1 store test. Mutation checks: removing the duplicate check, the grace period, or the signature check each fails a test.
+
+Next (Day 9): owner console (AG Grid) with a live decision grid, row detail and the review queue.
