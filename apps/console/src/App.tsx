@@ -200,10 +200,12 @@ function Kpi({ label, value, sub, tone }: { label: string; value: string; sub: s
 type Notice = { id: number; text: string; tone: "ok" | "bad" };
 
 /** What happened when the owner decided, in one sentence. */
-function describe(result: ReviewResult, amount: string): Omit<Notice, "id"> {
+function describe(result: ReviewResult, amount: string, tool: string): Omit<Notice, "id"> {
   if (result.status === "APPROVED") {
     const paypal = typeof result.paypal === "object" ? result.paypal : undefined;
-    return { text: `Approved: PayPal refund ${paypal?.id ?? ""} ${paypal?.status?.toLowerCase() ?? "sent"} for ${amount}.`, tone: "ok" };
+    if (tool === "create_refund")
+      return { text: `Approved: PayPal refund ${paypal?.id ?? ""} ${paypal?.status?.toLowerCase() ?? "sent"} for ${amount}.`, tone: "ok" };
+    return { text: `Approved: ${TOOL_LABELS[tool] ?? tool} for ${amount} sent to PayPal.`, tone: "ok" };
   }
   if (result.status === "REJECTED") return { text: `Rejected. Nothing was sent to PayPal.`, tone: "ok" };
   if (result.status === "FAILED")
@@ -276,7 +278,7 @@ function ReviewCard({
     setError("");
     try {
       // The card leaves the queue on the next live update, so the outcome is reported up.
-      onResult(describe(await decide(ownerKey, review.review_id, action, note), money(review.amount)));
+      onResult(describe(await decide(ownerKey, review.review_id, action, note), money(review.amount), review.tool));
     } catch (e) {
       setError((e as Error).message);
     }

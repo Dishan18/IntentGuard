@@ -122,6 +122,10 @@ class GeminiClient:
                         errors.append(f"{model}: {response.status_code} {message}")
                         if response.status_code not in RETRYABLE_STATUS:
                             raise LLMUnavailable("; ".join(errors))
+                        if response.status_code == 429 and "quota" in message.lower():
+                            # Out of quota (free tier): it won't come back in seconds, so try the next model.
+                            log.warning("%s, moving on", errors[-1][:120])
+                            break
                     log.warning("%s after %.1fs (attempt %d)", errors[-1], self._clock() - started, attempt + 1)
                     if attempt + 1 < self._attempts:
                         await asyncio.sleep(self._backoff_s * (2**attempt))

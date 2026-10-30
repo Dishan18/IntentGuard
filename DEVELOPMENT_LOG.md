@@ -307,4 +307,15 @@ Next (Day 10): mandate compiler (plain English → typed policy, shown back with
   - the toolkit error envelope in both the gateway and the agent loop;
   - restore as a draft without calling the model.
 
+### Day 10 follow-up (same day): invoices live
+
+- With **Invoicing** enabled on the sandbox app and the gateway restarted (it caches a PayPal token, which carried the old permissions):
+  - `--demo invoice`: `create_invoice` ALLOW → `send_invoice` ALLOW. PayPal shows `INV2-B85D-…` **SENT**, $48.00 to dev.patel@example.com.
+  - `--demo wedding`: `create_invoice` ALLOW → `send_invoice` **REVIEW** (`R_ABOVE_AUTO_LIMIT`, $1,500 > $1,000). Maya approved it in the console with a note; IntentGuard re-checked, then sent it. PayPal shows `INV2-JS9X-…` **SENT**, $1,500.00 to carla.diaz@example.com.
+- **Gemini quota:** the free tier has a separate daily quota per model, and it belongs to the Google project, not the key (a new key didn't help). 3.8-flash and 3.5-flash were exhausted; `gemini-3-flash-preview` and `gemini-3.5-flash-lite` still answered. Changes:
+  - The fallback chain is now `gemini-3.5-flash, gemini-3-flash-preview, gemini-3.5-flash-lite`, in `.env.example` and in the local `.env`, which had no fallback line at all, so only the built-in default was used.
+  - A 429 "quota exceeded" now moves straight to the next model instead of retrying (it won't clear in seconds). Test added.
+- **Console:** the approval notice said "PayPal refund sent" for an invoice. It now names the action ("Approved: Send invoice for $1,500.00 sent to PayPal.").
+- Tests: 163 passing.
+
 Next (Day 11): polish and checkpoint. Run scenarios A–D end to end, fix rough edges, and update the README for judges.
