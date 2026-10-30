@@ -85,7 +85,7 @@ Requirements: Python 3.11+, Node 22+, a PayPal sandbox app, and a free [Gemini A
    ```bash
    backend/.venv/Scripts/python scripts/checkpoint.py --runs 1
    ```
-6. **Tests** (offline, no credentials): `cd backend && .venv/Scripts/python -m pytest`
+6. **Tests** (offline, no credentials): `cd backend && .venv/Scripts/python -m pytest`. What they cover from a security point of view, and the trust model, is in [docs/SECURITY.md](docs/SECURITY.md).
 
 Free-tier Gemini has a daily quota per model. If one runs out, the agents fall back to the next model in `GEMINI_FALLBACK_MODELS`; if all are out, replies are built from IntentGuard's results instead, never claiming more than PayPal confirmed.
 

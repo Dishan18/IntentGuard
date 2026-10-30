@@ -370,3 +370,32 @@ Next (Day 12, stretch): red-team "Attack my policy": generated attack conversati
   - API start, one run at a time, and an LLM being required.
 
 Next (Day 13): feature freeze, then security tests (injection suite, replay, duplicate webhook, fail-closed when PayPal is down). Bug fixes only after this.
+
+## 2026-10-30 — Day 13: feature freeze and security tests
+
+**Feature freeze from here on: bug fixes, deployment and docs only.**
+
+I wrote `tests/test_security.py` first and ran it against the existing code. It found four real problems, now fixed:
+
+1. **`"1e400"` as a refund amount crashed the engine.** `Decimal("1e400")` parses, but rounding to cents raises `InvalidOperation`, which wasn't caught, so the call failed with no audit row. Amount parsing now only ever raises `ValueError`, caps amounts at $1,000,000, and requires refund amounts to be strings (floats are lossy; PayPal's contract is a string).
+2. **Facts failures other than PayPal or HTTP errors escaped.** A non-JSON error page, an unexpected response shape, or missing credentials would crash the call untraced. The new `read_facts()` turns *any* failure into `E_FACTS_UNAVAILABLE`: blocked, audited, retryable. The owner-approval path uses it too. The PayPal client also treats non-JSON bodies as errors.
+3. **Agent-supplied IDs went straight into PayPal URL paths.** `capture_id = "../../v1/identity/..."` would have made the gateway request another PayPal endpoint with the merchant's token. `PayPalRest` now refuses anything that isn't a plain resource ID (`[A-Za-z0-9_-]{1,64}`) before building a URL, and the gateway treats it as not found. I confirmed live: the probe was blocked and never reached PayPal. It was reported as `E_UNKNOWN_CAPTURE` for an order lookup; order and refund lookups now have their own codes, `E_UNKNOWN_ORDER` and `E_UNKNOWN_REFUND`.
+4. **No replay protection.** PayPal doesn't deduplicate refunds an agent asks for, so the same request sent twice (a retry loop, a resent request) would refund twice wherever the one-refund-per-customer rule doesn't apply. The fix:
+   - New engine rule: `replay` / `E_DUPLICATE_REQUEST`.
+   - It fires when an identical request (same agent, customer, tool and canonical arguments) was allowed or queued within 10 minutes. It covers refunds and invoice create/send/reminder.
+   - The check runs inside the ledger's write lock: 5 simultaneous copies → 1 sent, 4 refused.
+   - Blocked or PayPal-rejected requests may be retried. Approving a queued request isn't mistaken for a replay.
+   - Mutation check: disabling it fails 3 tests.
+   - Live: Ben's $19 refund COMPLETED, and the identical resend was BLOCK `E_DUPLICATE_REQUEST`, NOT_SENT.
+
+Also covered by the suite:
+- 17 hostile amount values, 4 malformed amount objects, 5 malformed capture IDs;
+- the agent can't forge the reconciliation ID; an unknown tool is refused without a PayPal lookup;
+- PayPal unreachable for each checked tool; approval failing closed;
+- 7 URL-steering ID shapes; non-JSON error pages; a genuine ID still reaching PayPal.
+
+- **`docs/SECURITY.md`:** the trust model (who is trusted for what), every enforced property with the tests that prove it, and the known demo-scope limits (demo login cookie, the runtime naming the customer, policy-allowed refunds, owner key in sessionStorage, single SQLite, rate limits still to do for hosting).
+- **Live checkpoint after the changes:** 2 of 2 runs passed against the sandbox.
+- **Tests: 227 passing** (50 new in `test_security.py`).
+
+Next (Day 14): deploy (Docker + Render), a Reset demo button, judge access, live PayPal webhook registration, Postman collection, and a clean-clone test of the README.

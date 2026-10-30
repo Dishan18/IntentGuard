@@ -38,11 +38,14 @@ AGENT_HINTS = {
     "E_AGENT_INACTIVE": "This agent has been disabled by the owner.",
     "E_MANDATE_INACTIVE": "There is no active authorization for this action. Tell the customer a person will follow up.",
     "E_TOOL_NOT_ALLOWED": "You are not permitted to use this tool.",
+    "E_DUPLICATE_REQUEST": "This exact request was already made moments ago and won't be repeated. Tell the customer it's being handled.",
     "E_NOT_IN_MANDATE": "The owner has not authorized this kind of action for you.",
     "E_INVALID_REQUEST": "The request is malformed. Check the arguments and try again.",
     "E_CURRENCY_NOT_ALLOWED": "Only the mandate's currency is allowed.",
     "E_FACTS_UNAVAILABLE": "Payment details could not be verified right now. Nothing was done; try again later.",
     "E_UNKNOWN_CAPTURE": "That payment does not exist. Look up the customer's order first.",
+    "E_UNKNOWN_ORDER": "That order does not exist. Check the order ID with the customer.",
+    "E_UNKNOWN_REFUND": "That refund does not exist.",
     "E_UNKNOWN_INVOICE": "That invoice does not exist.",
     "E_NO_SESSION_CUSTOMER": "There is no verified customer in this conversation.",
     "E_SUBJECT_MISMATCH": "You can only act on orders that belong to the customer you are talking to.",
@@ -78,14 +81,18 @@ class _Checks:
         return any(check.result is CheckResult.FAIL for check in self.items)
 
 
+# No single action in this product moves anywhere near this much; bigger is a malformed request.
+MAX_AMOUNT = Decimal("1000000")
+
+
 def _money(value) -> Decimal:
     """Parse a PayPal amount string. Raises ValueError for anything that isn't a positive 2-dp amount."""
     try:
         amount = Decimal(str(value))
-    except (InvalidOperation, TypeError) as error:
-        raise ValueError(f"not a number: {value!r}") from error
-    if not amount.is_finite() or amount <= 0 or amount != amount.quantize(CENT):
-        raise ValueError(f"not a positive amount with at most 2 decimals: {value!r}")
+        if not amount.is_finite() or amount <= 0 or amount > MAX_AMOUNT or amount != amount.quantize(CENT):
+            raise ValueError
+    except (InvalidOperation, TypeError, ValueError) as error:  # "1e400" fails in quantize, not in Decimal()
+        raise ValueError(f"not a positive amount with at most 2 decimals: {value!r}") from error
     return amount
 
 
@@ -96,6 +103,8 @@ def _usd(amount: Decimal) -> str:
 def evaluate(inp: EvaluationInput) -> Decision:
     checks = _Checks()
     _gate(inp, checks)
+    if inp.ledger.duplicate_of:
+        checks.fail("replay", "E_DUPLICATE_REQUEST", f"identical to {inp.ledger.duplicate_of}, made moments ago")
     resolved: Decimal | None = None
     if not checks.failed:
         handler = _HANDLERS.get(inp.tool)
@@ -194,6 +203,8 @@ def _create_refund(inp: EvaluationInput, checks: _Checks) -> Decimal | None:
         try:
             if not isinstance(amount, dict):
                 raise ValueError("amount must be {currency_code, value}")
+            if not isinstance(amount.get("value"), str):
+                raise ValueError('amount value must be a string like "10.00"')  # floats are lossy
             requested = _money(amount.get("value"))
         except ValueError as error:
             checks.fail("request_valid", "E_INVALID_REQUEST", str(error))
@@ -290,13 +301,13 @@ def _create_refund(inp: EvaluationInput, checks: _Checks) -> Decimal | None:
 
 
 def _get_order(inp: EvaluationInput, checks: _Checks) -> None:
-    facts: OrderFacts | None = _facts_check(inp, checks, OrderFacts, "E_UNKNOWN_CAPTURE")
+    facts: OrderFacts | None = _facts_check(inp, checks, OrderFacts, "E_UNKNOWN_ORDER")
     if facts is not None:
         _bind_customer(inp, checks, facts.customer_id)
 
 
 def _get_refund(inp: EvaluationInput, checks: _Checks) -> None:
-    facts: CaptureFacts | None = _facts_check(inp, checks, CaptureFacts, "E_UNKNOWN_CAPTURE")
+    facts: CaptureFacts | None = _facts_check(inp, checks, CaptureFacts, "E_UNKNOWN_REFUND")
     if facts is not None:
         _bind_customer(inp, checks, facts.customer_id)
 

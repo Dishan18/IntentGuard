@@ -20,11 +20,14 @@ REASONS = {
     "E_UNKNOWN_RECIPIENT": "the recipient isn't one of your customers",
     "E_UNAPPROVED_RECIPIENT": "it adds recipients you haven't allowed",
     "E_UNKNOWN_CAPTURE": "PayPal has no such payment",
+    "E_UNKNOWN_ORDER": "PayPal has no such order",
+    "E_UNKNOWN_REFUND": "PayPal has no such refund",
     "E_UNKNOWN_INVOICE": "PayPal has no such invoice",
     "E_FACTS_UNAVAILABLE": "PayPal couldn't be reached to check the facts, so it failed closed",
     "E_CURRENCY_NOT_ALLOWED": "the currency isn't allowed",
     "E_INVALID_REQUEST": "the request was malformed",
     "E_REVIEW_CHANGED": "it needed approval for a new reason by the time you approved it",
+    "E_DUPLICATE_REQUEST": "it was an exact repeat of a request made moments before",
 }
 
 
