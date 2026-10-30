@@ -56,6 +56,8 @@ export function DetailPanel({ ownerKey, id, version, onClose }: { ownerKey: stri
             </span>
           </div>
 
+          <p className="summary">{detail.summary}</p>
+
           <section>
             <h3>
               <span className="step">1</span> What you authorized
