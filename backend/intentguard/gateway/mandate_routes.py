@@ -19,13 +19,16 @@ from intentguard.agents.llm import LLMUnavailable
 from intentguard.compiler.mandate import changes_between, compile_mandate, example_decisions, render_rules
 from intentguard.gateway import registry
 from intentguard.gateway.mandates import MandateError, MandateStore
+from intentguard.gateway.server import DRY_RUN_AGENTS
 from intentguard.policy.models import Mandate
 
 MAX_TEXT_CHARS = 2000
 
 
 def _agents(db: sqlite3.Connection) -> list[registry.Agent]:
-    return [registry.get(db, row["id"]) for row in db.execute("SELECT id FROM agents ORDER BY id")]
+    # The red team borrows the Support Agent's mandate; it has none of its own to show.
+    return [registry.get(db, row["id"]) for row in db.execute("SELECT id FROM agents ORDER BY id")
+            if row["id"] not in DRY_RUN_AGENTS]
 
 
 def _agent_view(agent: registry.Agent) -> dict:

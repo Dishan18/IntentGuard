@@ -98,6 +98,33 @@ CREATE TABLE IF NOT EXISTS mandates (
 );
 CREATE INDEX IF NOT EXISTS mandates_agent ON mandates (agent_id, status);
 
+-- Red-team runs (intentguard/redteam.py): attacks played against the real agent and gateway in
+-- dry-run mode. Nothing here ever reached PayPal.
+CREATE TABLE IF NOT EXISTS redteam_runs (
+    id          TEXT PRIMARY KEY,
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    status      TEXT NOT NULL,            -- RUNNING | DONE | FAILED
+    compromised INTEGER NOT NULL,         -- 1: the agent was told to obey the customer
+    total       INTEGER NOT NULL,
+    error       TEXT
+);
+CREATE TABLE IF NOT EXISTS redteam_results (
+    run_id      TEXT NOT NULL,
+    idx         INTEGER NOT NULL,
+    attack_id   TEXT NOT NULL,
+    category    TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    source      TEXT NOT NULL,            -- catalog | generated
+    messages    TEXT NOT NULL,            -- JSON: what the attacker typed
+    reply       TEXT,
+    model       TEXT,
+    events      TEXT NOT NULL,            -- JSON: each tool call and IntentGuard's decision
+    verdict     TEXT NOT NULL,            -- STOPPED | HELD_FOR_YOU | MODEL_REFUSED | ALLOWED_BY_POLICY | BREACH | ERROR
+    detail      TEXT NOT NULL,
+    PRIMARY KEY (run_id, idx)
+);
+
 -- PayPal webhook deliveries. The event ID is the key, so a redelivered event is processed once.
 CREATE TABLE IF NOT EXISTS webhook_events (
     id           TEXT PRIMARY KEY,

@@ -209,3 +209,41 @@ export const activateMandate = (key: string, id: string, version: number) =>
   call<MandateVersion & { error?: string; message?: string }>(key, `/owner/mandates/${id}/${version}/activate`, {
     method: "POST",
   });
+
+// ---------------------------------------------------------------- red team
+
+export type Verdict = "BREACH" | "ALLOWED_BY_POLICY" | "HELD_FOR_YOU" | "STOPPED" | "MODEL_REFUSED" | "ERROR";
+
+export type RedTeamResult = {
+  idx: number;
+  attack_id: string;
+  category: string;
+  title: string;
+  source: "catalog" | "generated";
+  messages: string[];
+  reply: string | null;
+  model: string | null;
+  events: { tool: string; arguments: Record<string, unknown>; decision: string; code: string | null; codes: string[] }[];
+  verdict: Verdict;
+  detail: string;
+};
+
+export type RedTeamReport = {
+  run_id: string | null;
+  status?: "RUNNING" | "DONE" | "FAILED";
+  started_at?: string;
+  finished_at?: string | null;
+  compromised?: boolean;
+  total?: number;
+  done?: number;
+  error?: string | null;
+  counts?: Partial<Record<Verdict, number>>;
+  results?: RedTeamResult[];
+};
+
+export const getRedTeam = (key: string) => call<RedTeamReport>(key, "/owner/redteam/runs/latest");
+export const startRedTeam = (key: string, compromised: boolean, generated: number) =>
+  call<{ run_id?: string; error?: string; message?: string }>(key, "/owner/redteam/runs", {
+    method: "POST",
+    body: JSON.stringify({ compromised, generated }),
+  });

@@ -1110,3 +1110,160 @@ pre {
   font-size: 15px;
   line-height: 1.45;
 }
+
+/* ---------------------------------------------------------------- red team */
+
+.redteam {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.redteam-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  padding: 0 18px 18px;
+}
+
+.check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.check-label select {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+}
+
+.verdicts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.tone-good .kpi-value,
+.verdict.tone-good {
+  color: var(--allow);
+}
+
+.tone-bad .kpi-value,
+.verdict.tone-bad {
+  color: var(--block);
+}
+
+.tone-wait .kpi-value,
+.verdict.tone-wait {
+  color: var(--review);
+}
+
+.tone-info .kpi-value,
+.verdict.tone-info {
+  color: var(--brand);
+}
+
+.verdict-kpi.tone-bad {
+  border-color: color-mix(in srgb, var(--block) 40%, var(--line));
+}
+
+.run-meta {
+  margin: 0;
+}
+
+.attacks {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 520px) {
+  .attacks {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.attack {
+  padding: 14px 16px;
+  border-left: 3px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.attack.tone-good {
+  border-left-color: var(--allow);
+}
+
+.attack.tone-bad {
+  border-left-color: var(--block);
+}
+
+.attack.tone-wait {
+  border-left-color: var(--review);
+}
+
+.attack.tone-info {
+  border-left-color: var(--brand);
+}
+
+.attack-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.verdict {
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.verdict.tone-muted {
+  color: var(--muted);
+}
+
+blockquote.attacker {
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.attempts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.attempts li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 13px;
+}
+
+.attempt-what code {
+  margin-left: 6px;
+  color: var(--muted);
+}
+
+.attack-detail {
+  margin: 0;
+  font-size: 13px;
+}
+
+.attack details summary {
+  cursor: pointer;
+}

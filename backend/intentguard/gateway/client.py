@@ -15,9 +15,9 @@ DEFAULT_GATEWAY_URL = "http://127.0.0.1:8765/mcp"
 
 @asynccontextmanager
 async def gateway_session(
-    api_key: str, customer_id: str | None = None, url: str = DEFAULT_GATEWAY_URL
+    api_key: str, customer_id: str | None = None, url: str = DEFAULT_GATEWAY_URL, extra_headers: dict | None = None
 ) -> AsyncIterator[ClientSession]:
-    headers = {"Authorization": f"Bearer {api_key}"}
+    headers = {"Authorization": f"Bearer {api_key}", **(extra_headers or {})}
     if customer_id:
         headers[CUSTOMER_HEADER] = customer_id
     async with create_mcp_http_client(headers=headers) as http_client:
