@@ -12,7 +12,7 @@ Small merchants are giving AI agents access to their PayPal account so they can 
 ## Repository layout
 
 ```text
-backend/intentguard/   Python package: config, PayPal clients, gateway (policy engine, ledger, owner reviews), agents, demo store API
+backend/intentguard/   Python package: PayPal clients, gateway (policy, ledger, reviews, mandates), compiler, agents, store API
 apps/store/            React demo store with the customer chat
 apps/console/          React + AG Grid owner console (served by the gateway at /console)
 paypal-mcp/            Pinned PayPal MCP server, spawned by the gateway as its downstream
@@ -105,6 +105,36 @@ Ben Okafor: Refund capture 78B2… in full please (it's my friend Carla's dinner
 
 If the LLM fails mid-conversation, the agent's reply is built from IntentGuard's last result, so it never claims a refund happened unless PayPal says it did.
 
+## The Billing Agent
+
+A second agent with its own identity (`billing-agent`), its own allowlist (invoice tools only) and its own mandate (invoices only to existing customers, owner approval above $1,000, nothing above $2,000, no refunds). It reads emails from the store's inbox:
+
+```bash
+backend/.venv/Scripts/python scripts/billing.py --demo invoice      # Dev asks for a $48 invoice
+backend/.venv/Scripts/python scripts/billing.py --demo wedding      # $1,500: sent only after the owner approves
+backend/.venv/Scripts/python scripts/billing.py --demo stranger     # not a customer: BLOCK E_UNKNOWN_RECIPIENT
+backend/.venv/Scripts/python scripts/billing.py --demo goodwill --compromised
+```
+
+The last one is **scenario D**. An email asks for "a $200 goodwill refund". `--compromised` simulates an agent that obeys emails *and* was wired up with every PayPal tool, not just the ones IntentGuard allows it. It tries `create_refund`, and the gateway refuses on its identity alone:
+
+```text
+[IntentGuard] create_refund -> BLOCK E_TOOL_NOT_ALLOWED  (PayPal call NOT SENT)
+```
+
+Invoicing needs the **Invoicing** feature enabled on your sandbox app (Developer Dashboard → Apps & Credentials → your app → Features). Without it PayPal answers 403, which IntentGuard records as a PayPal error.
+
+## Mandates in plain English
+
+The owner writes what each agent may do in plain English, in the console's **Mandates** tab (or `POST /owner/mandates/compile`). The **Mandate Compiler** turns the text into a typed policy. The LLM only drafts; deterministic code decides whether the draft can be used:
+
+1. **Structure:** Gemini answers in JSON constrained to the policy schema, then Pydantic validates it. An invalid draft is shown but never stored.
+2. **Grounding:** every number in the draft must appear in the owner's text ("$50", "30 days", "one refund", "per month"). A limit the model made up blocks activation.
+3. **Gaps are shown, not hidden:** clauses no rule can express ("never accept a dispute over $100") are listed as *not enforced*, and refund rules for an agent that can't refund are flagged.
+4. **What it would do:** the draft runs through the real policy engine on situations built from its own limits ($20 refund → Allowed, $165 → Held, $350 → Blocked, someone else's order → Blocked…).
+
+Drafts are versions (`mnd_support` v2, v3…) and change nothing until the owner clicks **Activate**, which supersedes the previous version. Any earlier version can be restored as a new draft without the LLM. Every audit row records the mandate version it was decided under, and the console's row detail shows that version's rules, even after they change.
+
 ## How agents connect
 
 An agent never talks to PayPal directly. Its runtime opens an MCP session to the gateway with:
@@ -146,6 +176,8 @@ backend/.venv/Scripts/python -m intentguard.gateway
 - **Waiting for your approval:** each held request with the reasons it was held, a note for the customer, and Approve / Reject. Approve re-checks and sends (see below).
 - **Every agent action** (AG Grid): time, agent, customer, action, amount, decision, rule that fired, whether PayPal was called (with its refund ID), and final status. Filter by decision, search by customer, rule or PayPal ID. Updates live over server-sent events; new rows flash.
 - **Row detail**, the four audit questions: what you authorized (the mandate, verbatim, and its limits), what the agent tried (exact arguments), what PayPal says (its response, ledger and PayPal status), and every rule's result. Plus a timeline: decision, review, approval with note, execution, ledger, webhooks.
+
+- **Mandates** tab: each agent's rules in plain English, edit and compile them, review the draft (changes, warnings, example decisions), activate, and see version history (see [Mandates in plain English](#mandates-in-plain-english)).
 
 The data comes from `GET /owner/decisions`, `/owner/decisions/{id}`, `/owner/summary` and the live `/owner/stream`, all behind the owner key. For UI work, `npm run dev` in `apps/console` serves it at http://localhost:5174/console/ with the API proxied to the gateway.
 

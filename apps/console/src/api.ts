@@ -153,3 +153,57 @@ export async function follow(
     delay = Math.min(delay * 2, 15000);
   }
 }
+
+// ---------------------------------------------------------------- mandates
+
+export type Example = { scenario: string; decision: DecisionKind; codes: string[]; why: string };
+
+export type MandateVersion = {
+  mandate_id: string;
+  version: number;
+  agent_id: string;
+  status: "DRAFT" | "ACTIVE" | "SUPERSEDED" | "INVALID";
+  source_text: string;
+  compiled_by: string;
+  created_at: string;
+  activated_at: string | null;
+  activated_by: string | null;
+  rules: string[];
+  examples: Example[];
+  warnings: string[];
+  blocking: string[];
+  unsupported: string[];
+  mapping: { text: string; becomes: string }[];
+  changes: { field: string; from: string | null; to: string | null }[];
+};
+
+export type AgentMandates = {
+  agent: { id: string; name: string; purpose: string; status: string; allowed_tools: string[] };
+  active: MandateVersion | null;
+  history: {
+    version: number;
+    status: string;
+    compiled_by: string;
+    created_at: string;
+    activated_at: string | null;
+    activated_by: string | null;
+    source_text: string;
+  }[];
+};
+
+export const getMandates = (key: string) => call<AgentMandates[]>(key, "/owner/mandates");
+export const getMandateVersion = (key: string, id: string, version: number) =>
+  call<MandateVersion>(key, `/owner/mandates/${id}/${version}`);
+export const compileMandate = (key: string, agentId: string, text: string) =>
+  call<MandateVersion & { error?: string; message?: string }>(key, "/owner/mandates/compile", {
+    method: "POST",
+    body: JSON.stringify({ agent_id: agentId, text }),
+  });
+export const restoreMandate = (key: string, id: string, version: number) =>
+  call<MandateVersion & { error?: string; message?: string }>(key, `/owner/mandates/${id}/${version}/restore`, {
+    method: "POST",
+  });
+export const activateMandate = (key: string, id: string, version: number) =>
+  call<MandateVersion & { error?: string; message?: string }>(key, `/owner/mandates/${id}/${version}/activate`, {
+    method: "POST",
+  });

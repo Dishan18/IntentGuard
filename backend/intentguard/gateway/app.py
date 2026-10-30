@@ -12,7 +12,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from intentguard import store
 from intentguard.config import REPO_ROOT
-from intentguard.gateway import console, owner, registry, webhooks
+from intentguard.gateway import console, mandate_routes, owner, registry, webhooks
 from intentguard.gateway.server import AGENT_SCOPE_KEY, GatewayState, build_server
 
 
@@ -67,6 +67,7 @@ def build_app(db: sqlite3.Connection | None = None, host: str = "127.0.0.1") -> 
         Route("/health", health),
         *owner.routes(lambda: running[0]),
         *console.routes(lambda: running[0]),
+        *mandate_routes.routes(lambda: running[0]),
         *webhooks.routes(lambda: running[0]),
     ]
     if CONSOLE_DIST.exists():

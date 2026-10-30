@@ -30,6 +30,7 @@ from intentguard.gateway.server import (
     evaluate_locked,
     forward,
     new_call_id,
+    paypal_failed,
     record_call,
 )
 from intentguard.policy.models import CheckResult, Decision, Outcome
@@ -149,7 +150,8 @@ async def approve(state: GatewayState, review_id: str, owner: str, note: str | N
                 call_id, mandate, review["agent_id"], review["customer_id"], arguments["capture_id"],
                 decision.resolved_amount, now,
             )
-        record_call(state, call_id, review["agent_id"], review["customer_id"], tool, arguments, decision, review_id)
+        # Re-checked under the mandate active now: if the owner changed the rules since, the new ones apply.
+        record_call(state, call_id, review["agent_id"], review["customer_id"], tool, arguments, decision, review_id, mandate)
         state.db.execute("UPDATE tool_calls SET outcome = 'REVIEW_APPROVED' WHERE id = ?", (review["call_id"],))
 
     if decision.outcome is Outcome.BLOCK:
@@ -168,11 +170,12 @@ async def approve(state: GatewayState, review_id: str, owner: str, note: str | N
         paypal = json.loads(text)
     except ValueError:
         paypal = text
-    if result.is_error:
+    failed = paypal_failed(result.is_error, text)
+    if failed:
         state.reviews.resolve(review_id, "FAILED", state.clock())
     return 200, {
         "review_id": review_id,
-        "status": "FAILED" if result.is_error else "APPROVED",
+        "status": "FAILED" if failed else "APPROVED",
         "call_id": call_id,
         "paypal_call": "SENT",
         "paypal": paypal,

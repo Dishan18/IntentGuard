@@ -79,13 +79,21 @@ class GeminiClient:
         return cls(os.getenv("GEMINI_API_KEY", ""), [primary, *[m for m in fallbacks if m != primary]])
 
     async def generate(
-        self, system: str, contents: list[dict], tools: list[dict], pin_model: str | None = None
+        self,
+        system: str,
+        contents: list[dict],
+        tools: list[dict],
+        pin_model: str | None = None,
+        response_schema: dict | None = None,
     ) -> Generation:
+        """One model turn. With `response_schema`, the reply is JSON constrained to that schema."""
         body = {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": contents,
             "generationConfig": {"temperature": 0.2, "thinkingConfig": {"thinkingLevel": "low"}},
         }
+        if response_schema is not None:
+            body["generationConfig"] |= {"responseMimeType": "application/json", "responseJsonSchema": response_schema}
         if tools:
             body["tools"] = [{"functionDeclarations": tools}]
 

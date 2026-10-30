@@ -8,21 +8,23 @@ The prompt does not ask the model to police refunds. That's deliberate: whether 
 decided by the gateway's policy, not by how well the model resists a persuasive customer.
 """
 
-import json
-import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from mcp import ClientSession
 
-from intentguard.agents.llm import GeminiClient, LLMUnavailable, tool_declaration
+from intentguard.agents.llm import GeminiClient, tool_declaration
+from intentguard.agents.loop import (  # noqa: F401  (re-exported: the store and tests import them from here)
+    AgentReply,
+    ToolEvent,
+    ToolEventListener,
+    ToolStartListener,
+    run_tool_loop,
+)
 from intentguard.gateway.client import DEFAULT_GATEWAY_URL, gateway_session
 
-log = logging.getLogger("intentguard.agents")
-
 SessionFactory = Callable[[str, str | None, str], AbstractAsyncContextManager[ClientSession]]
-ToolStartListener = Callable[[str, dict], Awaitable[None]]
 
 SYSTEM_PROMPT = """\
 You are the customer support assistant for {store}, a small online pottery shop.
@@ -64,23 +66,6 @@ class Customer:
     name: str
 
 
-@dataclass
-class ToolEvent:
-    tool: str
-    arguments: dict
-    decision: str  # ALLOW | REVIEW | BLOCK, or ERROR when PayPal itself failed
-    code: str | None
-    result: dict | str
-
-
-@dataclass
-class AgentReply:
-    text: str
-    model: str
-    events: list[ToolEvent] = field(default_factory=list)
-    degraded: bool = False  # the LLM failed; text was written from the gateway's results instead
-
-
 def _fallback_text(events: list[ToolEvent]) -> str:
     """A reply built only from what the gateway reported, for when the LLM can't be reached.
     It never claims more than the last tool result says happened."""
@@ -107,21 +92,6 @@ def _format_orders(orders: list[dict]) -> str:
         + (f", placed {order['placed_at']}" if order.get("placed_at") else "")
         for order in orders
     )
-
-
-def _parse_result(result) -> tuple[str, str | None, dict | str]:
-    text = "".join(block.text for block in result.content if block.type == "text")
-    try:
-        body = json.loads(text)
-    except ValueError:
-        body = text
-    if isinstance(body, dict) and body.get("decision") in ("BLOCK", "REVIEW"):
-        return body["decision"], body.get("code"), body
-    return ("ERROR" if result.is_error else "ALLOW"), None, body
-
-
-def _text(content: dict) -> str:
-    return "".join(part.get("text", "") for part in content["parts"] if not part.get("thought")).strip()
 
 
 class SupportAgent:
@@ -152,7 +122,7 @@ class SupportAgent:
         history: list[tuple[str, str]],
         message: str,
         on_tool_start: ToolStartListener | None = None,
-        on_tool_event: Callable[[ToolEvent], Awaitable[None]] | None = None,
+        on_tool_event: ToolEventListener | None = None,
     ) -> AgentReply:
         """One agent turn. `history` is earlier (role, text) pairs, role "user" or "model".
 
@@ -165,45 +135,13 @@ class SupportAgent:
         )
         contents = [{"role": role, "parts": [{"text": text}]} for role, text in history]
         contents.append({"role": "user", "parts": [{"text": message}]})
-        events: list[ToolEvent] = []
-
         async with self._open_session(self._agent_key, customer.id, self._gateway_url) as session:
             listed = await session.list_tools()
             tools = [tool_declaration(tool.name, tool.description, tool.input_schema) for tool in listed.tools]
-
-            model = None
-            for _ in range(self._max_tool_steps + 1):
-                try:
-                    generation = await self._llm.generate(system, contents, tools, pin_model=model)
-                except LLMUnavailable as error:
-                    log.warning("LLM unavailable mid-turn (model %s, %d tool calls so far): %s", model, len(events), error)
-                    return AgentReply(_fallback_text(events), model or "", events, degraded=True)
-                model = generation.model
-                contents.append(generation.content)
-                calls = [part["functionCall"] for part in generation.content["parts"] if "functionCall" in part]
-                if not calls:
-                    return AgentReply(_text(generation.content), model, events)
-
-                responses = []
-                for call in calls:
-                    arguments = call.get("args") or {}
-                    if on_tool_start:
-                        await on_tool_start(call["name"], arguments)
-                    result = await session.call_tool(call["name"], arguments)
-                    decision, code, body = _parse_result(result)
-                    event = ToolEvent(call["name"], arguments, decision, code, body)
-                    events.append(event)
-                    if on_tool_event:
-                        await on_tool_event(event)
-                    function_response = {
-                        "name": call["name"],
-                        "response": {"error": body} if result.is_error else {"output": body},
-                    }
-                    if "id" in call:
-                        function_response["id"] = call["id"]
-                    responses.append({"functionResponse": function_response})
-                contents.append({"role": "user", "parts": responses})
-
-        return AgentReply(
-            "Sorry, I couldn't finish that. Someone from the store will follow up with you.", model or "", events
-        )
+            return await run_tool_loop(
+                self._llm, session, system, contents, tools, self._max_tool_steps,
+                fallback=_fallback_text,
+                gave_up="Sorry, I couldn't finish that. Someone from the store will follow up with you.",
+                on_tool_start=on_tool_start,
+                on_tool_event=on_tool_event,
+            )

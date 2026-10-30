@@ -30,10 +30,12 @@ from mcp.server.lowlevel import Server
 
 from intentguard import demo
 from intentguard.config import get_settings
+from intentguard.agents.llm import GeminiClient, LLMUnavailable
 from intentguard.gateway import registry
 from intentguard.gateway.downstream import DownstreamUnavailable, PayPalDownstream
 from intentguard.gateway.facts import FactsService
 from intentguard.gateway.ledger import Ledger, Reviews
+from intentguard.gateway.mandates import MandateStore
 from intentguard.gateway.reconcile import Reconciler
 from intentguard.paypal.auth import TokenProvider
 from intentguard.paypal.rest import PayPalRest
@@ -70,6 +72,7 @@ class GatewayState:
     mandates: Callable[[str], Mandate | None] = demo.MANDATES.get
     reconciler: Reconciler | None = None
     webhook_id: str = ""
+    compiler_llm: GeminiClient | None = None  # drafts mandates from the owner's text; None without a key
     known_customer_emails: frozenset[str] = demo.KNOWN_CUSTOMER_EMAILS
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
@@ -154,6 +157,18 @@ def _forward_arguments(tool: str, arguments: dict, decision: Decision, mandate: 
     return arguments
 
 
+def paypal_failed(is_error: bool, result_text: str) -> bool:
+    """PayPal's toolkit reports API errors as an ordinary result, `{"ok": false, "status": 403, ...}`,
+    not as an MCP error, so both have to be checked."""
+    if is_error:
+        return True
+    try:
+        body = json.loads(result_text)
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("ok") is False
+
+
 def _refund_fields(result_text: str) -> tuple[str | None, str | None]:
     """PayPal's refund ID and status from a create_refund result."""
     try:
@@ -205,11 +220,14 @@ def record_call(
     arguments: dict,
     decision: Decision,
     review_id: str | None,
+    mandate: Mandate | None = None,
 ) -> None:
-    """Write the audit row. Called before anything is forwarded to PayPal."""
+    """Write the audit row, with the mandate version it was decided under. Called before anything
+    is forwarded to PayPal."""
     state.db.execute(
         "INSERT INTO tool_calls (id, agent_id, customer_id, tool, arguments, decision, reason_code, codes, checks,"
-        " resolved_amount, review_id, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " resolved_amount, review_id, outcome, mandate_id, mandate_version)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             call_id,
             agent_id,
@@ -223,6 +241,8 @@ def record_call(
             None if decision.resolved_amount is None else str(decision.resolved_amount),
             review_id,
             {"ALLOW": "PENDING", "REVIEW": "AWAITING_REVIEW", "BLOCK": "NOT_SENT"}[decision.outcome.value],
+            mandate.id if mandate else None,
+            mandate.version if mandate else None,
         ),
     )
 
@@ -266,7 +286,7 @@ async def call_tool(ctx: ServerRequestContext, params: types.CallToolRequestPara
             state.ledger.reserve(
                 call_id, mandate, agent.id, customer_id, arguments["capture_id"], decision.resolved_amount, now
             )
-        record_call(state, call_id, agent.id, customer_id, tool, arguments, decision, review_id)
+        record_call(state, call_id, agent.id, customer_id, tool, arguments, decision, review_id, mandate)
 
     if decision.outcome is Outcome.BLOCK:
         return block_result(call_id, decision)
@@ -305,13 +325,14 @@ async def forward(state: GatewayState, call_id: str, tool: str, arguments: dict)
         raise
 
     text = _result_text(result)
+    failed = paypal_failed(result.is_error, text)
     record(
         forwarded=1,
-        outcome="PAYPAL_ERROR" if result.is_error else "OK",
+        outcome="PAYPAL_ERROR" if failed else "OK",
         result=text,
         duration_ms=int((time.monotonic() - started) * 1000),
     )
-    if result.is_error:
+    if failed:
         state.ledger.release(call_id, state.clock())
     else:
         refund_id, paypal_status = _refund_fields(text)
@@ -331,10 +352,18 @@ def build_server(
         downstream = PayPalDownstream(settings, tokens)
         paypal = PayPalRest(settings, tokens)
         facts = FactsService(paypal)
+        mandates = MandateStore(db)
+        mandates.seed(demo.MANDATES.values(), datetime.now(UTC))
         async with anyio.create_task_group() as task_group:
             await task_group.start(downstream.run)
-            state = GatewayState(db=db, downstream=downstream, facts=facts, webhook_id=settings.paypal_webhook_id)
+            state = GatewayState(
+                db=db, downstream=downstream, facts=facts, mandates=mandates.active, webhook_id=settings.paypal_webhook_id
+            )
             state.reconciler = Reconciler(db, paypal, facts, state.clock)
+            try:
+                state.compiler_llm = GeminiClient.from_env()
+            except LLMUnavailable:
+                state.compiler_llm = None
             task_group.start_soon(state.reconciler.poll, RECONCILE_INTERVAL_S)
             on_state(state)
             try:
