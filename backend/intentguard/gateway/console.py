@@ -115,7 +115,10 @@ def decision_row(row: sqlite3.Row) -> dict:
 
 
 def decisions(db: sqlite3.Connection, limit: int = GRID_LIMIT) -> list[dict]:
-    rows = db.execute(_DECISIONS_SQL + " ORDER BY c.created_at DESC, c.rowid DESC LIMIT ?", (limit,)).fetchall()
+    # Red-team dry runs have their own report; they aren't the owner's activity.
+    rows = db.execute(
+        _DECISIONS_SQL + " WHERE c.outcome != 'DRY_RUN' ORDER BY c.created_at DESC, c.rowid DESC LIMIT ?", (limit,)
+    ).fetchall()
     return [decision_row(row) for row in rows]
 
 
@@ -194,7 +197,8 @@ def summary(db: sqlite3.Connection, mandates: list[Mandate], now: datetime) -> d
     """Today's (UTC) numbers for the KPI row."""
     day = now.date().isoformat()
     rows = db.execute(
-        "SELECT decision, review_id, resolved_amount, arguments, outcome, tool FROM tool_calls WHERE substr(created_at, 1, 10) = ?",
+        "SELECT decision, review_id, resolved_amount, arguments, outcome, tool FROM tool_calls"
+        " WHERE substr(created_at, 1, 10) = ? AND outcome != 'DRY_RUN'",
         (day,),
     ).fetchall()
 

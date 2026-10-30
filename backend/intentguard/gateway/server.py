@@ -20,8 +20,9 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import anyio
 import mcp_types as types
@@ -42,6 +43,7 @@ from intentguard.paypal.rest import PayPalRest
 from intentguard.policy.engine import evaluate
 from intentguard.policy.models import (
     AgentView,
+    CaptureFacts,
     CheckResult,
     Decision,
     EvaluationInput,
@@ -57,11 +59,38 @@ AGENT_SCOPE_KEY = "intentguard.agent"
 # deliberately not retryable: the agent should hand off to a person, not hunt for a smaller amount.
 RETRYABLE_CODES = {"E_INVALID_REQUEST", "E_CURRENCY_NOT_ALLOWED", "E_UNKNOWN_CAPTURE", "E_UNKNOWN_INVOICE", "E_FACTS_UNAVAILABLE"}
 
+# Red-team identities (gateway/redteam.py): decided exactly like the agent they stand in for, with
+# real PayPal facts and the same mandate, but nothing is ever forwarded, reserved or queued.
+DRY_RUN_AGENTS = {"redteam-agent": "support-agent"}
+# Groups a red-team attack's calls, so later calls see what earlier ones would have done.
+SCENARIO_HEADER = "x-intentguard-scenario"
+
 # How long the gateway waits for PayPal on a forwarded call before recording OUTCOME_UNKNOWN.
 FORWARD_TIMEOUT_S = 60.0
 
 # How often the poller checks refunds whose outcome isn't final (see gateway/reconcile.py).
 RECONCILE_INTERVAL_S = float(os.getenv("RECONCILE_INTERVAL_S", "60"))
+
+
+@dataclass
+class Shadow:
+    """What one dry-run attack would have refunded so far. Overlaid on the real ledger and PayPal
+    facts for that attack's later calls, so "refund $40, then another $40" is judged as a whole."""
+
+    refunds: list[tuple[str | None, str, Decimal]] = field(default_factory=list)  # customer, capture, amount
+
+    def snapshot(self, real: LedgerSnapshot, customer_id: str | None) -> LedgerSnapshot:
+        return LedgerSnapshot(
+            customer_refunds_in_window=real.customer_refunds_in_window
+            + sum(1 for customer, _, _ in self.refunds if customer == customer_id),
+            refunded_today=real.refunded_today + sum((amount for _, _, amount in self.refunds), Decimal("0")),
+        )
+
+    def facts(self, facts):
+        if not isinstance(facts, CaptureFacts):
+            return facts
+        extra = sum((amount for _, capture, amount in self.refunds if capture == facts.capture_id), Decimal("0"))
+        return replace(facts, already_refunded=facts.already_refunded + extra)
 
 
 @dataclass
@@ -73,6 +102,7 @@ class GatewayState:
     reconciler: Reconciler | None = None
     webhook_id: str = ""
     compiler_llm: GeminiClient | None = None  # drafts mandates from the owner's text; None without a key
+    shadows: dict[str, Shadow] = field(default_factory=dict)  # per red-team attack
     known_customer_emails: frozenset[str] = demo.KNOWN_CUSTOMER_EMAILS
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
@@ -187,12 +217,15 @@ def evaluate_locked(
     customer_id: str | None,
     facts,
     now: datetime,
+    shadow: Shadow | None = None,
 ) -> Decision:
     """Evaluate a call inside an open ledger transaction, against an up-to-date ledger snapshot."""
     snapshot = LedgerSnapshot()
     if tool == "create_refund" and mandate is not None and mandate.refunds is not None:
         state.reviews.expire_stale(now)  # an abandoned review stops counting toward the customer's limit
         snapshot = state.ledger.snapshot(mandate, customer_id, now)
+        if shadow is not None:
+            snapshot = shadow.snapshot(snapshot, customer_id)
     decision = evaluate(
         EvaluationInput(
             agent=AgentView(agent.id, agent.active, agent.allowed_tools),
@@ -221,6 +254,7 @@ def record_call(
     decision: Decision,
     review_id: str | None,
     mandate: Mandate | None = None,
+    outcome: str | None = None,
 ) -> None:
     """Write the audit row, with the mandate version it was decided under. Called before anything
     is forwarded to PayPal."""
@@ -240,7 +274,7 @@ def record_call(
             json.dumps([check.__dict__ | {"result": check.result.value} for check in decision.checks]),
             None if decision.resolved_amount is None else str(decision.resolved_amount),
             review_id,
-            {"ALLOW": "PENDING", "REVIEW": "AWAITING_REVIEW", "BLOCK": "NOT_SENT"}[decision.outcome.value],
+            outcome or {"ALLOW": "PENDING", "REVIEW": "AWAITING_REVIEW", "BLOCK": "NOT_SENT"}[decision.outcome.value],
             mandate.id if mandate else None,
             mandate.version if mandate else None,
         ),
@@ -265,12 +299,18 @@ async def call_tool(ctx: ServerRequestContext, params: types.CallToolRequestPara
     tool = params.name
     arguments = dict(params.arguments or {})
     call_id = new_call_id()
-    mandate = state.mandates(agent.id)
+    stands_in_for = DRY_RUN_AGENTS.get(agent.id)
+    mandate = state.mandates(stands_in_for or agent.id)
 
     # Only fetch facts for calls that could be allowed; never spend a PayPal call on a disallowed tool.
     facts = None
     if tool in agent.allowed_tools and tool in state.downstream.tools:
         facts = await anyio.to_thread.run_sync(state.facts.for_call, tool, arguments)
+
+    if stands_in_for:
+        scenario = ctx.request.headers.get(SCENARIO_HEADER) or call_id
+        return dry_run(state, state.shadows.setdefault(scenario, Shadow()), agent, stands_in_for, mandate, tool,
+                       arguments, customer_id, facts, call_id)
 
     now = state.clock()
     review_id = None
@@ -293,6 +333,48 @@ async def call_tool(ctx: ServerRequestContext, params: types.CallToolRequestPara
     if decision.outcome is Outcome.REVIEW:
         return review_result(call_id, review_id, decision)
     return await forward(state, call_id, tool, forward_args)
+
+
+def dry_run(
+    state: GatewayState,
+    shadow: Shadow,
+    agent: registry.Agent,
+    stands_in_for: str,
+    mandate: Mandate | None,
+    tool: str,
+    arguments: dict,
+    customer_id: str | None,
+    facts,
+    call_id: str,
+) -> types.CallToolResult:
+    """A red-team call: the real decision, the same answer the agent would get, and no side effects.
+    Audited with outcome DRY_RUN; the console keeps these out of the owner's activity and totals."""
+    now = state.clock()
+    with state.ledger.transaction():
+        # Judged as the agent it stands in for (whose mandate it is), with its own allowlist.
+        as_agent = replace(agent, id=stands_in_for)
+        decision = evaluate_locked(state, as_agent, mandate, tool, arguments, customer_id, shadow.facts(facts), now, shadow)
+        record_call(state, call_id, agent.id, customer_id, tool, arguments, decision, None, mandate, outcome="DRY_RUN")
+    if decision.outcome is Outcome.BLOCK:
+        return block_result(call_id, decision)
+    if decision.outcome is Outcome.REVIEW:
+        return review_result(call_id, "rv_dry_run", decision)
+    if tool == "create_refund" and decision.resolved_amount is not None:
+        shadow.refunds.append((customer_id, arguments.get("capture_id", ""), decision.resolved_amount))
+    return _json_result(
+        {
+            "id": f"DRYRUN{call_id[-10:].upper()}",
+            "status": "COMPLETED",
+            "dry_run": True,
+            **(
+                {"amount": {"currency_code": mandate.currency, "value": f"{decision.resolved_amount:.2f}"}}
+                if decision.resolved_amount is not None and mandate
+                else {}
+            ),
+            "note": "Red-team dry run: IntentGuard would have allowed this. Nothing was sent to PayPal.",
+        },
+        is_error=False,
+    )
 
 
 async def forward(state: GatewayState, call_id: str, tool: str, arguments: dict) -> types.CallToolResult:
@@ -354,6 +436,9 @@ def build_server(
         facts = FactsService(paypal)
         mandates = MandateStore(db)
         mandates.seed(demo.MANDATES.values(), datetime.now(UTC))
+        # A red-team run can't survive a restart; don't let it block the next one.
+        db.execute("UPDATE redteam_runs SET status = 'FAILED', error = 'interrupted: the gateway restarted'"
+                   " WHERE status = 'RUNNING'")
         async with anyio.create_task_group() as task_group:
             await task_group.start(downstream.run)
             state = GatewayState(

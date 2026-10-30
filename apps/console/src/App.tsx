@@ -3,6 +3,7 @@ import { decide, follow, getSummary, type Review, type ReviewResult, saveKey, sa
 import { DetailPanel } from "./Detail";
 import { DecisionGrid } from "./Grid";
 import { Mandates } from "./Mandates";
+import { RedTeam } from "./RedTeam";
 import { AGENT_LABELS, clock, money, TOOL_LABELS } from "./format";
 
 export default function App() {
@@ -73,7 +74,7 @@ function Console({ ownerKey, onSignOut }: { ownerKey: string; onSignOut: () => v
   const [selected, setSelected] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
   const [notices, setNotices] = useState<Notice[]>([]);
-  const [view, setView] = useState<"activity" | "mandates">("activity");
+  const [view, setView] = useState<"activity" | "mandates" | "redteam">("activity");
 
   const notify = useCallback((notice: Omit<Notice, "id">) => {
     const id = Date.now() + Math.random();
@@ -114,6 +115,9 @@ function Console({ ownerKey, onSignOut }: { ownerKey: string; onSignOut: () => v
           <button className={view === "mandates" ? "active" : ""} onClick={() => setView("mandates")}>
             Mandates
           </button>
+          <button className={view === "redteam" ? "active" : ""} onClick={() => setView("redteam")}>
+            Red team
+          </button>
         </nav>
         <div className="topbar-right">
           <span className={`live ${live ? "on" : ""}`} role="status">
@@ -140,6 +144,10 @@ function Console({ ownerKey, onSignOut }: { ownerKey: string; onSignOut: () => v
       {view === "mandates" ? (
         <main className="content">
           <Mandates ownerKey={ownerKey} onNotice={(text, tone) => notify({ text, tone })} />
+        </main>
+      ) : view === "redteam" ? (
+        <main className="content">
+          <RedTeam ownerKey={ownerKey} onNotice={(text, tone) => notify({ text, tone })} />
         </main>
       ) : !snapshot ? (
         <p className="muted loading">Connecting to the gateway…</p>
