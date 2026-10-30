@@ -245,6 +245,20 @@ async def test_timeout_moves_to_the_next_model_without_retrying():
 
 
 @pytest.mark.anyio
+async def test_exhausted_quota_moves_to_the_next_model_without_retrying():
+    seen = []
+
+    def handler(request):
+        seen.append("primary" if "primary" in request.url.path else "fallback")
+        if seen[-1] == "primary":
+            return httpx.Response(429, json={"error": {"code": 429, "message": "You exceeded your current quota"}})
+        return httpx.Response(200, json=OK)
+
+    assert (await client_with(handler).generate("sys", [], [])).model == "fallback"
+    assert seen == ["primary", "fallback"]
+
+
+@pytest.mark.anyio
 async def test_pinned_model_never_falls_back():
     seen = []
 
