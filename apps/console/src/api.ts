@@ -17,6 +17,8 @@ export type DecisionRow = {
   review_id: string | null;
   review_status: string | null;
   owner_approved: boolean;
+  /** One plain sentence built from the rule results. */
+  summary: string;
 };
 
 export type Check = { rule: string; result: "PASS" | "FAIL" | "REVIEW"; detail: string; code: string | null };

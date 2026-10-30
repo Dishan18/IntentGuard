@@ -21,6 +21,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from intentguard import demo
+from intentguard.gateway.explain import explain
 from intentguard.gateway.ledger import Ledger
 from intentguard.gateway.mandates import MandateStore
 from intentguard.gateway.owner import list_reviews, review_view
@@ -90,7 +91,7 @@ def _status(row: sqlite3.Row) -> str:
 
 def decision_row(row: sqlite3.Row) -> dict:
     customer = demo.CUSTOMERS.get(row["customer_id"] or "", {})
-    return {
+    view = {
         "id": row["id"],
         "time": row["created_at"],
         "agent_id": row["agent_id"],
@@ -109,6 +110,8 @@ def decision_row(row: sqlite3.Row) -> dict:
         # An ALLOW that executes a request the owner approved, rather than one the agent made directly.
         "owner_approved": row["decision"] == "ALLOW" and row["review_id"] is not None,
     }
+    view["summary"] = explain(view, _json(row["checks"], []))
+    return view
 
 
 def decisions(db: sqlite3.Connection, limit: int = GRID_LIMIT) -> list[dict]:

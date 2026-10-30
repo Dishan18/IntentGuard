@@ -7,6 +7,7 @@ import {
   type ICellRendererParams,
   ModuleRegistry,
   QuickFilterModule,
+  RowAutoHeightModule,
   type RowClickedEvent,
   RowStyleModule,
   themeQuartz,
@@ -18,7 +19,14 @@ import type { DecisionKind, DecisionRow } from "./api";
 import { AGENT_LABELS, clock, DECISION_LABELS, dateTime, money, TOOL_LABELS } from "./format";
 
 // Only what this grid uses, to keep the bundle small.
-ModuleRegistry.registerModules([CellStyleModule, ClientSideRowModelModule, QuickFilterModule, RowStyleModule, TooltipModule]);
+ModuleRegistry.registerModules([
+  CellStyleModule,
+  ClientSideRowModelModule,
+  QuickFilterModule,
+  RowAutoHeightModule,
+  RowStyleModule,
+  TooltipModule,
+]);
 
 export function DecisionChip({ decision, approved }: { decision: DecisionKind; approved?: boolean }) {
   return (
@@ -132,26 +140,35 @@ export function DecisionGrid({
         valueFormatter: (p) => clock(p.value),
         tooltipValueGetter: (p) => dateTime(p.value),
       },
-      { field: "agent_id", headerName: "Agent", width: 140, valueFormatter: (p) => AGENT_LABELS[p.value] ?? p.value ?? "" },
+      { field: "agent_id", headerName: "Agent", width: 105, valueFormatter: (p) => (AGENT_LABELS[p.value] ?? p.value ?? "").replace(" Agent", "") },
       {
         field: "customer_name",
         headerName: "Customer",
-        width: 130,
+        width: 120,
         valueGetter: (p) => p.data?.customer_name ?? p.data?.customer_id ?? "—",
       },
       { field: "tool", headerName: "Action", width: 130, valueFormatter: (p) => TOOL_LABELS[p.value] ?? p.value },
       {
         field: "amount",
         headerName: "Amount",
-        width: 110,
+        width: 100,
         type: "rightAligned",
         valueGetter: (p) => (p.data?.amount ? Number(p.data.amount) : null),
         valueFormatter: (p) => (p.value === null ? "—" : money(String(p.value))),
       },
-      { field: "decision", headerName: "Decision", width: 170, cellRenderer: DecisionCell },
-      { field: "rule", headerName: "Rule", flex: 1, minWidth: 190, cellRenderer: RuleCell, getQuickFilterText: (p) => p.data?.codes.join(" ") ?? "" },
-      { field: "paypal_call", headerName: "PayPal", width: 230, cellRenderer: PayPalCell, getQuickFilterText: (p) => p.data?.paypal_id ?? "" },
-      { field: "status", headerName: "Status", width: 140, valueFormatter: (p) => String(p.value ?? "").replaceAll("_", " ").toLowerCase() },
+      { field: "decision", headerName: "Decision", width: 160, cellRenderer: DecisionCell },
+      {
+        field: "summary",
+        headerName: "What happened",
+        flex: 2,
+        minWidth: 300,
+        cellClass: "summary-cell",
+        wrapText: true,
+        autoHeight: true,
+      },
+      { field: "rule", headerName: "Rule", width: 165, cellRenderer: RuleCell, getQuickFilterText: (p) => p.data?.codes.join(" ") ?? "" },
+      // The final status is part of "What happened", so it has no column of its own.
+      { field: "paypal_call", headerName: "PayPal", width: 200, cellRenderer: PayPalCell, getQuickFilterText: (p) => p.data?.paypal_id ?? "" },
     ],
     [],
   );

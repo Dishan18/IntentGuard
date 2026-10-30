@@ -319,3 +319,27 @@ Next (Day 10): mandate compiler (plain English → typed policy, shown back with
 - Tests: 163 passing.
 
 Next (Day 11): polish and checkpoint. Run scenarios A–D end to end, fix rough edges, and update the README for judges.
+
+## 2026-10-30 — Day 11: polish and checkpoint
+
+- **Checkpoint met: A–D pass 3 runs in a row** against the live sandbox (`scripts/checkpoint.py`, about 62 s per run including a fresh reset). It replaces `gateway_smoke.py` and makes the agents' calls directly, without the LLM, so a failure points at IntentGuard or PayPal, not the model. Each run checks:
+  - identity: an unknown agent key gets 401; an agent key on the owner API gets 401;
+  - A: a full refund with no amount gives PayPal exactly the resolved $38.00, and the refund carries IntentGuard's call ID; a second refund is blocked with `E_FREQUENCY`;
+  - B: $900 BLOCK with three codes, NOT_SENT; Carla's order from Ben's session and Dev's order read are both `E_SUBJECT_MISMATCH`;
+  - C: $160 REVIEW → owner approval over HTTP → re-checked → PayPal COMPLETED; a second approval gets 409;
+  - D: the billing agent's refund is `E_TOOL_NOT_ALLOWED`; an invoice to a non-customer is `E_UNKNOWN_RECIPIENT`; a $48 invoice is created and sent, and PayPal reports it **SENT**;
+  - the ledger is exactly $38 + $160, both COMPLETED at PayPal; 11 calls audited, 4 sent to PayPal, 0 blocked calls sent; every row records its mandate version;
+  - the console summary shows $1,265.00 protected and $198 of the $300 cap used.
+- **Plain-English explanations** (`gateway/explain.py`): one sentence per decision, built from the recorded rule results, never by the LLM. Examples:
+  - "Stopped before PayPal: the Support Agent tried to refund $900.00 to Ben Okafor, but that's more than is left to refund on the payment, it's above your hard limit and it would go over today's refund cap."
+  - "You approved it: … $160.00 is above the $50.00 auto-approve limit."
+  - "Done after your approval: PayPal refund $160.00 to Carla Diaz was completed."
+
+  The console shows these in a wrapping "What happened" column, which replaces the Status column, and at the top of the detail panel. Wrapping rows needed AG Grid's `RowAutoHeightModule` (error #200 again until it was registered).
+- **`reset_demo.py`** now also resets the mandates to the built-in v1 (`--keep-mandates` to skip that), in one transaction while the gateway is running. `reset()` is reusable by the checkpoint.
+- **`scripts/run_demo.py`:** one command for judges. It checks prerequisites, builds the store and console if needed, starts the gateway and store, waits until both are healthy, and prints the URLs. Ctrl+C stops both, and PayPal's MCP process exits with the gateway.
+- **README rewritten for judges:** the problem, the three guarantees, a scenario table, a Mermaid architecture diagram, the PayPal and AI technologies used, a six-step "Run it", and the repository layout; the detailed sections follow.
+- **Agents on the free tier:** with 3.8 and 3.5 flash out of quota, a store-agent turn fell through to `gemini-3-flash-preview` and refunded Dev's $48 (ALLOW, COMPLETED) with a normal reply.
+- **Tests: 167 passing** (4 new explanation tests).
+
+Next (Day 12, stretch): red-team "Attack my policy": generated attack conversations run through the real agent and gateway in a forward-nothing mode, with a report screen.
