@@ -1,16 +1,22 @@
-"""The gateway's HTTP app: MCP for agents at /mcp, the owner's review API at /owner, PayPal
-webhooks at /webhooks/paypal (verified by signature, not by key), and /health."""
+"""The gateway's HTTP app: MCP for agents at /mcp, the owner's API at /owner (review queue and
+console data), PayPal webhooks at /webhooks/paypal (verified by signature, not by key), the owner
+console's static files at /console (the data behind it needs the owner key), and /health."""
 
 import sqlite3
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.routing import Route
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from intentguard import store
-from intentguard.gateway import owner, registry, webhooks
+from intentguard.config import REPO_ROOT
+from intentguard.gateway import console, owner, registry, webhooks
 from intentguard.gateway.server import AGENT_SCOPE_KEY, GatewayState, build_server
+
+
+CONSOLE_DIST = REPO_ROOT / "apps" / "console" / "dist"
 
 
 def _bearer(scope: Scope) -> str:
@@ -57,12 +63,13 @@ def build_app(db: sqlite3.Connection | None = None, host: str = "127.0.0.1") -> 
         running[0] = state
 
     server = build_server(db, on_state)
-    app = server.streamable_http_app(
-        host=host,
-        custom_starlette_routes=[
-            Route("/health", health),
-            *owner.routes(lambda: running[0]),
-            *webhooks.routes(lambda: running[0]),
-        ],
-    )
+    routes = [
+        Route("/health", health),
+        *owner.routes(lambda: running[0]),
+        *console.routes(lambda: running[0]),
+        *webhooks.routes(lambda: running[0]),
+    ]
+    if CONSOLE_DIST.exists():
+        routes.append(Mount("/console", StaticFiles(directory=CONSOLE_DIST, html=True)))
+    app = server.streamable_http_app(host=host, custom_starlette_routes=routes)
     return AuthMiddleware(app, db)
