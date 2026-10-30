@@ -14,6 +14,7 @@ authenticated customer the conversation belongs to; the policy binds actions to 
 """
 
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -21,7 +22,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import anyio
@@ -44,6 +45,7 @@ from intentguard.policy.engine import evaluate
 from intentguard.policy.models import (
     AgentView,
     CaptureFacts,
+    FactsFailure,
     CheckResult,
     Decision,
     EvaluationInput,
@@ -52,18 +54,29 @@ from intentguard.policy.models import (
     Outcome,
 )
 
+log = logging.getLogger("intentguard.gateway")
+
 CUSTOMER_HEADER = "x-intentguard-customer"
 AGENT_SCOPE_KEY = "intentguard.agent"
 
 # Block codes where the agent can fix its own request and try again. Limit and binding codes are
 # deliberately not retryable: the agent should hand off to a person, not hunt for a smaller amount.
-RETRYABLE_CODES = {"E_INVALID_REQUEST", "E_CURRENCY_NOT_ALLOWED", "E_UNKNOWN_CAPTURE", "E_UNKNOWN_INVOICE", "E_FACTS_UNAVAILABLE"}
+RETRYABLE_CODES = {
+    "E_INVALID_REQUEST", "E_CURRENCY_NOT_ALLOWED", "E_UNKNOWN_CAPTURE", "E_UNKNOWN_ORDER", "E_UNKNOWN_REFUND",
+    "E_UNKNOWN_INVOICE", "E_FACTS_UNAVAILABLE",
+}
 
 # Red-team identities (gateway/redteam.py): decided exactly like the agent they stand in for, with
 # real PayPal facts and the same mandate, but nothing is ever forwarded, reserved or queued.
 DRY_RUN_AGENTS = {"redteam-agent": "support-agent"}
 # Groups a red-team attack's calls, so later calls see what earlier ones would have done.
 SCENARIO_HEADER = "x-intentguard-scenario"
+
+# Calls that move money or reach customers. An identical one within the window, after one that was
+# allowed or queued, is a replay (a retry loop, a resent request) and is refused: PayPal doesn't
+# deduplicate refunds an agent asks for, so the gateway must.
+REPLAY_GUARDED_TOOLS = {"create_refund", "create_invoice", "send_invoice", "send_invoice_reminder"}
+REPLAY_WINDOW = timedelta(minutes=10)
 
 # How long the gateway waits for PayPal on a forwarded call before recording OUTCOME_UNKNOWN.
 FORWARD_TIMEOUT_S = 60.0
@@ -208,6 +221,17 @@ def _refund_fields(result_text: str) -> tuple[str | None, str | None]:
         return None, None
 
 
+async def read_facts(state: "GatewayState", tool: str, arguments: dict):
+    """Facts from PayPal for a call. Whatever goes wrong (PayPal down, an HTML error page, an
+    unexpected shape, missing credentials) becomes a facts failure, so the call is blocked and
+    audited rather than crashing with no trace."""
+    try:
+        return await anyio.to_thread.run_sync(state.facts.for_call, tool, arguments)
+    except Exception as error:
+        log.exception("reading facts for %s failed", tool)
+        return FactsFailure(not_found=False, detail=f"couldn't read facts from PayPal ({type(error).__name__})")
+
+
 def evaluate_locked(
     state: GatewayState,
     agent: registry.Agent,
@@ -218,6 +242,7 @@ def evaluate_locked(
     facts,
     now: datetime,
     shadow: Shadow | None = None,
+    duplicate_of: str | None = None,
 ) -> Decision:
     """Evaluate a call inside an open ledger transaction, against an up-to-date ledger snapshot."""
     snapshot = LedgerSnapshot()
@@ -226,6 +251,8 @@ def evaluate_locked(
         snapshot = state.ledger.snapshot(mandate, customer_id, now)
         if shadow is not None:
             snapshot = shadow.snapshot(snapshot, customer_id)
+    if duplicate_of:
+        snapshot = replace(snapshot, duplicate_of=duplicate_of)
     decision = evaluate(
         EvaluationInput(
             agent=AgentView(agent.id, agent.active, agent.allowed_tools),
@@ -267,7 +294,7 @@ def record_call(
             agent_id,
             customer_id,
             tool,
-            json.dumps(arguments),
+            _canonical(arguments),
             decision.outcome.value,
             decision.code,
             json.dumps(list(decision.codes)),
@@ -279,6 +306,28 @@ def record_call(
             mandate.version if mandate else None,
         ),
     )
+
+
+def find_replay(state: "GatewayState", agent_id: str, customer_id: str | None, tool: str, arguments: dict,
+                now: datetime) -> str | None:
+    """An identical request from the same agent for the same customer that was allowed or queued within
+    the window. Called inside the ledger transaction, so two copies sent at once can't both pass.
+    A request that was blocked, or that PayPal rejected, may be made again."""
+    if tool not in REPLAY_GUARDED_TOOLS:
+        return None
+    row = state.db.execute(
+        "SELECT id FROM tool_calls WHERE agent_id = ? AND IFNULL(customer_id, '') = IFNULL(?, '') AND tool = ?"
+        " AND arguments = ? AND created_at >= ?"
+        " AND ((decision = 'ALLOW' AND outcome IN ('PENDING', 'OK', 'OUTCOME_UNKNOWN'))"
+        "   OR (decision = 'REVIEW' AND outcome IN ('AWAITING_REVIEW', 'REVIEW_APPROVED')))"
+        " ORDER BY created_at DESC LIMIT 1",
+        (agent_id, customer_id, tool, _canonical(arguments), (now - REPLAY_WINDOW).isoformat(timespec="milliseconds")),
+    ).fetchone()
+    return row["id"] if row else None
+
+
+def _canonical(arguments: dict) -> str:
+    return json.dumps(arguments, sort_keys=True)
 
 
 def new_call_id() -> str:
@@ -305,7 +354,7 @@ async def call_tool(ctx: ServerRequestContext, params: types.CallToolRequestPara
     # Only fetch facts for calls that could be allowed; never spend a PayPal call on a disallowed tool.
     facts = None
     if tool in agent.allowed_tools and tool in state.downstream.tools:
-        facts = await anyio.to_thread.run_sync(state.facts.for_call, tool, arguments)
+        facts = await read_facts(state, tool, arguments)
 
     if stands_in_for:
         scenario = ctx.request.headers.get(SCENARIO_HEADER) or call_id
@@ -315,7 +364,8 @@ async def call_tool(ctx: ServerRequestContext, params: types.CallToolRequestPara
     now = state.clock()
     review_id = None
     with state.ledger.transaction():
-        decision = evaluate_locked(state, agent, mandate, tool, arguments, customer_id, facts, now)
+        replay_of = find_replay(state, agent.id, customer_id, tool, arguments, now)
+        decision = evaluate_locked(state, agent, mandate, tool, arguments, customer_id, facts, now, duplicate_of=replay_of)
         forward_args = _forward_arguments(tool, arguments, decision, mandate) if mandate else arguments
 
         if decision.outcome is Outcome.REVIEW:

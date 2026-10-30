@@ -17,7 +17,6 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
 
-import anyio
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -31,6 +30,7 @@ from intentguard.gateway.server import (
     forward,
     new_call_id,
     paypal_failed,
+    read_facts,
     record_call,
 )
 from intentguard.policy.models import CheckResult, Decision, Outcome
@@ -120,7 +120,7 @@ async def approve(state: GatewayState, review_id: str, owner: str, note: str | N
 
     tool = review["tool"]
     arguments = json.loads(review["arguments"])
-    facts = await anyio.to_thread.run_sync(state.facts.for_call, tool, arguments)  # fresh, not the ones from before
+    facts = await read_facts(state, tool, arguments)  # fresh, not the ones from before
     now = state.clock()
     call_id = new_call_id()
 

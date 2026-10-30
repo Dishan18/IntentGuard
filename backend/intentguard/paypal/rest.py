@@ -4,6 +4,7 @@ Tool calls an agent asks for go through PayPal's MCP server instead; this client
 reads the gateway must not delegate to anything the agent can influence.
 """
 
+import re
 import uuid
 from typing import Any
 
@@ -21,17 +22,38 @@ class PayPalAPIError(RuntimeError):
         super().__init__(f"PayPal {status_code} {body.get('name', '')}: {issues or body.get('message', '')}")
 
 
+# PayPal resource IDs (orders, captures, refunds, invoices, webhooks). Anything else never reaches a
+# URL: an agent-supplied "ID" like "../../v1/..." must not steer a request to another endpoint.
+_RESOURCE_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _id(value: str) -> str:
+    if not isinstance(value, str) or not _RESOURCE_ID.fullmatch(value):
+        raise PayPalAPIError(400, {"name": "INVALID_RESOURCE_ID", "details": [{"issue": "INVALID_RESOURCE_ID"}],
+                                   "message": "not a PayPal resource ID"})
+    return value
+
+
 class PayPalRest:
-    def __init__(self, settings: Settings, tokens: TokenProvider):
+    def __init__(self, settings: Settings, tokens: TokenProvider, transport: httpx.BaseTransport | None = None):
         self._base = settings.paypal_api_base
         self._tokens = tokens
+        self._transport = transport
 
     def _request(self, method: str, path: str, json: dict | None = None, idempotent: bool = False) -> dict:
         headers = {"Authorization": f"Bearer {self._tokens.get()}", "Content-Type": "application/json"}
         if idempotent:
             headers["PayPal-Request-Id"] = str(uuid.uuid4())
-        response = httpx.request(method, f"{self._base}{path}", headers=headers, json=json, timeout=30)
-        body = response.json() if response.content else {}
+        with httpx.Client(transport=self._transport, timeout=30) as client:
+            response = client.request(method, f"{self._base}{path}", headers=headers, json=json)
+        try:
+            body = response.json() if response.content else {}
+        except ValueError:  # an HTML error page from a proxy, say
+            body = {"name": "NON_JSON_RESPONSE", "message": response.text[:200]}
+            if not response.is_error:
+                raise PayPalAPIError(502, body) from None
+        if not isinstance(body, dict):
+            raise PayPalAPIError(502, {"name": "UNEXPECTED_RESPONSE", "message": str(body)[:200]})
         if response.is_error:
             raise PayPalAPIError(response.status_code, body)
         return body
@@ -40,19 +62,19 @@ class PayPalRest:
         return self._request("POST", "/v2/checkout/orders", json=body, idempotent=True)
 
     def capture_order(self, order_id: str) -> dict:
-        return self._request("POST", f"/v2/checkout/orders/{order_id}/capture", json={}, idempotent=True)
+        return self._request("POST", f"/v2/checkout/orders/{_id(order_id)}/capture", json={}, idempotent=True)
 
     def get_order(self, order_id: str) -> dict:
-        return self._request("GET", f"/v2/checkout/orders/{order_id}")
+        return self._request("GET", f"/v2/checkout/orders/{_id(order_id)}")
 
     def get_capture(self, capture_id: str) -> dict:
-        return self._request("GET", f"/v2/payments/captures/{capture_id}")
+        return self._request("GET", f"/v2/payments/captures/{_id(capture_id)}")
 
     def get_refund(self, refund_id: str) -> dict:
-        return self._request("GET", f"/v2/payments/refunds/{refund_id}")
+        return self._request("GET", f"/v2/payments/refunds/{_id(refund_id)}")
 
     def get_invoice(self, invoice_id: str) -> dict:
-        return self._request("GET", f"/v2/invoicing/invoices/{invoice_id}")
+        return self._request("GET", f"/v2/invoicing/invoices/{_id(invoice_id)}")
 
     # ------------------------------------------------------------ webhooks
 
@@ -78,4 +100,4 @@ class PayPalRest:
         return self._request("POST", "/v1/notifications/webhooks", json=body)
 
     def delete_webhook(self, webhook_id: str) -> None:
-        self._request("DELETE", f"/v1/notifications/webhooks/{webhook_id}")
+        self._request("DELETE", f"/v1/notifications/webhooks/{_id(webhook_id)}")

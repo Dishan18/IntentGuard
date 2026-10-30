@@ -110,6 +110,8 @@ class LedgerSnapshot:
 
     customer_refunds_in_window: int = 0
     refunded_today: Decimal = Decimal("0")
+    # An identical request already allowed or queued moments ago (its call ID): this one is a replay.
+    duplicate_of: str | None = None
 
 
 @dataclass(frozen=True)
