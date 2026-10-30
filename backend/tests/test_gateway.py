@@ -238,6 +238,21 @@ async def test_paypal_error_releases_the_reservation(db):
 
 
 @pytest.mark.anyio
+async def test_paypal_error_reported_as_an_ordinary_result_still_releases(db):
+    # PayPal's toolkit returns API errors as {"ok": false, ...} without flagging an MCP error.
+    class ToolkitError(FakeDownstream):
+        async def call_tool(self, name, arguments):
+            self.calls.append((name, arguments))
+            body = {"ok": False, "status": 422, "code": "PAYPAL_API_HTTP_ERROR", "message": "REFUND_DECLINED"}
+            return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(body))])
+
+    state = make_state(db, downstream=ToolkitError())
+    await call_tool(make_ctx(state, make_agent(db)), refund(value="10.00"))
+    assert ledger_rows(db)[0]["status"] == "RELEASED"
+    assert db.execute("SELECT outcome FROM tool_calls").fetchone()[0] == "PAYPAL_ERROR"
+
+
+@pytest.mark.anyio
 async def test_unreachable_paypal_releases_and_reports_not_sent(db):
     state = make_state(db, downstream=FakeDownstream(error=DownstreamUnavailable("down")))
     result = await call_tool(make_ctx(state, make_agent(db)), refund(value="10.00"))

@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import { decide, follow, getSummary, type Review, type ReviewResult, saveKey, savedKey, type Snapshot, Unauthorized } from "./api";
 import { DetailPanel } from "./Detail";
 import { DecisionGrid } from "./Grid";
+import { Mandates } from "./Mandates";
 import { AGENT_LABELS, clock, money, TOOL_LABELS } from "./format";
 
 export default function App() {
@@ -72,6 +73,7 @@ function Console({ ownerKey, onSignOut }: { ownerKey: string; onSignOut: () => v
   const [selected, setSelected] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
   const [notices, setNotices] = useState<Notice[]>([]);
+  const [view, setView] = useState<"activity" | "mandates">("activity");
 
   const notify = useCallback((notice: Omit<Notice, "id">) => {
     const id = Date.now() + Math.random();
@@ -104,6 +106,15 @@ function Console({ ownerKey, onSignOut }: { ownerKey: string; onSignOut: () => v
             <p className="muted">Owner console · Maya's Pottery · PayPal sandbox</p>
           </div>
         </div>
+        <nav className="tabs" aria-label="Console sections">
+          <button className={view === "activity" ? "active" : ""} onClick={() => setView("activity")}>
+            Activity
+            {snapshot && snapshot.summary.pending_reviews > 0 && <span className="badge">{snapshot.summary.pending_reviews}</span>}
+          </button>
+          <button className={view === "mandates" ? "active" : ""} onClick={() => setView("mandates")}>
+            Mandates
+          </button>
+        </nav>
         <div className="topbar-right">
           <span className={`live ${live ? "on" : ""}`} role="status">
             <span className="live-dot" aria-hidden />
@@ -126,7 +137,11 @@ function Console({ ownerKey, onSignOut }: { ownerKey: string; onSignOut: () => v
         ))}
       </div>
 
-      {!snapshot ? (
+      {view === "mandates" ? (
+        <main className="content">
+          <Mandates ownerKey={ownerKey} onNotice={(text, tone) => notify({ text, tone })} />
+        </main>
+      ) : !snapshot ? (
         <p className="muted loading">Connecting to the gateway…</p>
       ) : (
         <main className="content">

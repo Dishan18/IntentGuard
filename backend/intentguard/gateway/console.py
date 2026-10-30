@@ -22,6 +22,7 @@ from starlette.routing import Route
 
 from intentguard import demo
 from intentguard.gateway.ledger import Ledger
+from intentguard.gateway.mandates import MandateStore
 from intentguard.gateway.owner import list_reviews, review_view
 from intentguard.policy.models import Mandate
 
@@ -168,8 +169,11 @@ def decision_detail(
 
     return {
         **summary,
-        # 1. What the owner authorized
-        "mandate": _mandate_view(mandates(row["agent_id"] or "")),
+        # 1. What the owner authorized: the version in force when this call was decided
+        "mandate": _mandate_view(
+            (row["mandate_id"] and MandateStore(db).get(row["mandate_id"], row["mandate_version"]))
+            or mandates(row["agent_id"] or "")
+        ),
         # 2. What the agent tried, exactly as it sent it
         "arguments": _json(row["arguments"], {}),
         # 3. What PayPal says (the facts as checked, and PayPal's own response if the call was sent)

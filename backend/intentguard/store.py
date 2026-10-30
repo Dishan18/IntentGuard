@@ -81,6 +81,23 @@ CREATE INDEX IF NOT EXISTS reviews_pending ON reviews (status, mandate_id, custo
 
 -- Keys for the store owner's API (review queue). Separate from agent keys, so an agent key can
 -- never approve its own requests.
+-- Versioned mandates (gateway/mandates.py). A version is a DRAFT until the owner activates it.
+CREATE TABLE IF NOT EXISTS mandates (
+    id           TEXT NOT NULL,           -- stable per agent, e.g. mnd_support
+    version      INTEGER NOT NULL,
+    agent_id     TEXT NOT NULL,
+    status       TEXT NOT NULL,           -- DRAFT | ACTIVE | SUPERSEDED
+    policy       TEXT NOT NULL,           -- Mandate as JSON
+    source_text  TEXT NOT NULL,
+    compiled_by  TEXT NOT NULL,           -- 'seed', or the LLM model that drafted it
+    notes        TEXT,                    -- what the compiler showed the owner, as JSON
+    created_at   TEXT NOT NULL,
+    activated_at TEXT,
+    activated_by TEXT,
+    PRIMARY KEY (id, version)
+);
+CREATE INDEX IF NOT EXISTS mandates_agent ON mandates (agent_id, status);
+
 -- PayPal webhook deliveries. The event ID is the key, so a redelivered event is processed once.
 CREATE TABLE IF NOT EXISTS webhook_events (
     id           TEXT PRIMARY KEY,
@@ -104,6 +121,8 @@ ADDED_COLUMNS = {
         "checks": "TEXT",
         "resolved_amount": "TEXT",
         "review_id": "TEXT",
+        "mandate_id": "TEXT",  # the mandate and version this call was decided under
+        "mandate_version": "INTEGER",
     },
     "reviews": {
         "execution_call_id": "TEXT",  # the tool_calls row that executed the approved request
