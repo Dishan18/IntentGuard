@@ -14,6 +14,7 @@ Small merchants are giving AI agents access to their PayPal account so they can 
 ```text
 backend/intentguard/   Python package: config, PayPal clients, gateway (policy engine, ledger, owner reviews), agents, demo store API
 apps/store/            React demo store with the customer chat
+apps/console/          React + AG Grid owner console (served by the gateway at /console)
 paypal-mcp/            Pinned PayPal MCP server, spawned by the gateway as its downstream
 scripts/               Dev scripts (tool catalog, sandbox seeding)
 docs/                  Generated PayPal MCP tool catalog and design notes
@@ -132,6 +133,22 @@ Each agent only sees and can only call the PayPal tools in its allowlist. Every 
   `retryable` is true only when the agent can fix its own request (a malformed amount, a wrong ID, or PayPal temporarily unreachable). Limit and ownership blocks aren't retryable: the agent should hand off to a person, not look for an amount that slips through.
 - **REVIEW:** not an error. The exact call (with the amount filled in) is queued for the owner. `{"decision": "REVIEW", "status": "PENDING_OWNER_APPROVAL", "review_id": "rv_…", "paypal_call": "NOT_SENT_YET", …}`
 
+## The owner console
+
+The store owner's view of every agent action, served by the gateway at **http://127.0.0.1:8765/console/** (sign in with the `owner` key from `data/agent_keys.json`):
+
+```bash
+cd apps/console && npm ci && npm run build && cd ../..
+backend/.venv/Scripts/python -m intentguard.gateway
+```
+
+- **Today's numbers:** refunds made automatically, approved by you, waiting for you, blocked, money protected (refunds agents tried that the rules stopped), and the daily cap as a meter.
+- **Waiting for your approval:** each held request with the reasons it was held, a note for the customer, and Approve / Reject. Approve re-checks and sends (see below).
+- **Every agent action** (AG Grid): time, agent, customer, action, amount, decision, rule that fired, whether PayPal was called (with its refund ID), and final status. Filter by decision, search by customer, rule or PayPal ID. Updates live over server-sent events; new rows flash.
+- **Row detail**, the four audit questions: what you authorized (the mandate, verbatim, and its limits), what the agent tried (exact arguments), what PayPal says (its response, ledger and PayPal status), and every rule's result. Plus a timeline: decision, review, approval with note, execution, ledger, webhooks.
+
+The data comes from `GET /owner/decisions`, `/owner/decisions/{id}`, `/owner/summary` and the live `/owner/stream`, all behind the owner key. For UI work, `npm run dev` in `apps/console` serves it at http://localhost:5174/console/ with the API proxied to the gateway.
+
 ## Owner approval (REVIEW)
 
 When a request is held, the owner decides. Approving executes the **stored** request (the exact call that was held, with its resolved amount), never a new one from the agent. Before it's sent, it is checked again with fresh PayPal facts and the current ledger, in one transaction:
@@ -140,7 +157,7 @@ When a request is held, the owner decides. Approving executes the **stored** req
 - hard rules still apply: if the payment was refunded elsewhere meanwhile, the daily cap is used up, or the agent was revoked, the review becomes `FAILED` and nothing is sent;
 - a review can be approved once, even if the button is clicked twice at the same moment; reviews not decided within 72 hours expire.
 
-The owner API lives on the gateway at `/owner/reviews` and uses an **owner key**, separate from agent keys: an agent key gets `401` there, so an agent can never approve its own request. From a terminal:
+The owner API lives on the gateway at `/owner/reviews` and uses an **owner key**, separate from agent keys: an agent key gets `401` there, so an agent can never approve its own request. Decide in the console, or from a terminal:
 
 ```bash
 backend/.venv/Scripts/python scripts/reviews.py                       # what's waiting

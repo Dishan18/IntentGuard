@@ -137,11 +137,25 @@ def _gate(inp: EvaluationInput, checks: _Checks) -> None:
         checks.fail("in_mandate", "E_NOT_IN_MANDATE", f"IntentGuard has no policy for {inp.tool}")
 
 
+def _describe_facts(facts) -> str:
+    """The facts in one line, for the audit trail."""
+    if isinstance(facts, CaptureFacts):
+        return (
+            f"capture {facts.capture_id}, ${facts.amount:.2f} {facts.currency} captured, "
+            f"${facts.already_refunded:.2f} already refunded, customer {facts.customer_id or 'unknown'}"
+        )
+    if isinstance(facts, InvoiceFacts):
+        return f"invoice {facts.invoice_id}, {facts.status}, ${facts.total:.2f} {facts.currency}"
+    if isinstance(facts, OrderFacts):
+        return f"order {facts.order_id}, customer {facts.customer_id or 'unknown'}"
+    return type(facts).__name__
+
+
 def _facts_check(inp: EvaluationInput, checks: _Checks, expected: type, not_found_code: str):
     """Returns the facts if usable; otherwise records why not (failing closed) and returns None."""
     facts = inp.facts
     if isinstance(facts, expected):
-        checks.ok("facts", f"verified with PayPal: {type(facts).__name__}")
+        checks.ok("facts", f"read from PayPal: {_describe_facts(facts)}")
         return facts
     if isinstance(facts, FactsFailure) and facts.not_found:
         checks.fail("facts", not_found_code, facts.detail)

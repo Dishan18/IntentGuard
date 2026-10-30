@@ -222,3 +222,33 @@ Next (Day 8): PayPal webhooks plus a poller, so refund status comes from PayPal 
 - **Tests: 134 passing.** 17 new reconcile/webhook tests and 1 store test. Mutation checks: removing the duplicate check, the grace period, or the signature check each fails a test.
 
 Next (Day 9): owner console (AG Grid) with a live decision grid, row detail and the review queue.
+
+## 2026-10-30 — Day 9: the owner console (AG Grid)
+
+- **Console API** (`gateway/console.py`, under `/owner`, owner key only):
+  - `GET /owner/decisions`: grid rows joining the audit log, ledger and reviews. Each row has the decision, the rule that fired, all codes, whether PayPal was called (SENT / NOT_SENT / waiting for owner), PayPal's refund ID, final status, and whether it executed an owner approval.
+  - `GET /owner/decisions/{id}` answers the spec's four audit questions:
+    1. what the owner authorized (mandate text and limits);
+    2. what the agent tried (verbatim arguments);
+    3. what PayPal says (its response, ledger and PayPal status);
+    4. each rule's result.
+    It also has a timeline: decision, review, approval with note, execution, ledger, webhooks.
+  - `GET /owner/summary`: today's (UTC) KPIs. Refunds made automatically, approved by owner, held, pending, blocked, money protected (refund amounts agents tried that were blocked), and daily cap usage per mandate.
+  - `GET /owner/stream`: server-sent events. It sends a `snapshot` (summary, grid rows, pending reviews) on connect and whenever anything changes, polling the database once a second. Unchanged ticks send nothing; there's a keepalive every 15 s.
+- **Console app** (`apps/console`, React 19 + AG Grid 36 Community, built to `apps/console/dist`, served by the gateway at `/console/`):
+  - Sign in with the owner key (kept in sessionStorage); agent keys are rejected.
+  - KPI cards and a cap meter, the "Waiting for your approval" queue (reasons, note for the customer, Approve / Reject), and a live AG Grid with decision chips, rule codes, and a PayPal cell (Sent + refund ID / Not sent / Waiting for you).
+  - Filters by decision with counts, quick search (customer, rule, PayPal ID), and new rows flash.
+  - Row click opens the audit detail beside the grid, or below it on narrow screens.
+  - The outcome of each decision is shown as a notice, because the card leaves the queue on the next live update.
+  - The stream is read with fetch (so it can send the Authorization header) and reconnects with backoff.
+  - Only the AG Grid modules in use are registered. That brought the bundle from 1.4 MB to 285 KB gzipped (I first missed `CellStyleModule`, which AG Grid reported as error #200 in the console).
+  - Light and dark themes, and it works at phone width.
+- **Engine:** the facts check now reads "read from PayPal: capture …, $42.00 USD captured, $0.00 already refunded, customer cust_ben" instead of a class name.
+- **Live run** (after `reset_demo.py`; real Gemini, gateway, sandbox), with the console open:
+  - Ben's SYSTEM OVERRIDE: this time `gemini-3.8-flash` refused by itself (no tool call). In compromised mode: BLOCK, three codes, NOT SENT. The console showed it live, with **Money protected $900.00**.
+  - Carla's $160 appeared in "Waiting for your approval". I approved it in the console with a note: re-checked, sent, "PayPal refund 5XD81404DS6906902 completed for $160.00". KPIs went to Approved by you 1 · $160, with the cap meter at $160 of $300, and an "Approved by you" row appeared.
+  - Detail panels checked for the blocked call (rule by rule, PayPal call not sent) and the approved execution (PayPal response, review note, timeline).
+- **Tests: 139 passing.** 5 new: grid rows, four-question detail, KPIs and money protected, owner-key-only access, and the stream (one snapshot, then only changes).
+
+Next (Day 10): mandate compiler (plain English → typed policy, shown back with example decisions, then Activate) and the Billing Agent.

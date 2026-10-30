@@ -42,7 +42,7 @@ def _iso_to_datetime(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def _review_view(db, row) -> dict:
+def review_view(db, row) -> dict:
     call = db.execute("SELECT checks FROM tool_calls WHERE id = ?", (row["call_id"],)).fetchone()
     checks = json.loads(call["checks"]) if call and call["checks"] else []
     execution = None
@@ -86,7 +86,7 @@ def list_reviews(state: GatewayState, status: str | None = None) -> list[dict]:
     if status:
         query, params = query + " WHERE status = ?", (status,)
     rows = state.db.execute(query + " ORDER BY created_at DESC LIMIT 200", params).fetchall()
-    return [_review_view(state.db, row) for row in rows]
+    return [review_view(state.db, row) for row in rows]
 
 
 def _not_pending(review_id: str, status: str) -> tuple[int, dict]:
