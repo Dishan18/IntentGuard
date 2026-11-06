@@ -399,3 +399,29 @@ Also covered by the suite:
 - **Tests: 227 passing** (50 new in `test_security.py`).
 
 Next (Day 14): deploy (Docker + Render), a Reset demo button, judge access, live PayPal webhook registration, Postman collection, and a clean-clone test of the README.
+
+## 2026-11-06 — Day 14: deployed to Render
+
+**Live: https://intentguard-5dd9.onrender.com** (store) and `/console/` (owner console). Free Render web service from `render.yaml`, Docker runtime, Oregon.
+
+- **One port for two apps.** `intentguard.hosted` routes `/mcp`, `/owner`, `/console`, `/webhooks` and `/health` to the gateway, and everything else to the store, in one process. The store's Support Agent still reaches the gateway over HTTP with its agent key (loopback, same port), so the request path is the same as two servers.
+- **Free instances start from an empty disk.** On start-up it registers the agents, takes the owner key (and optionally the Support Agent's key) from Render-generated secrets so judges get stable keys, and seeds fresh sandbox orders. Seeding was 34 s sequentially; in parallel the whole cold start is about 8 s.
+- **Seeding, registration and reset moved into `intentguard.demo_data`.** The scripts are now thin wrappers, and the console has a **Reset demo** button (`POST /owner/demo/reset`). It refuses while a red-team run is going.
+- **Rate limits** (`intentguard/ratelimit.py`, sliding windows in memory):
+  - chat turns: 15 per 5 min per IP, 400 a day overall;
+  - mandate compiles: 10 per 10 min per IP;
+  - red-team runs: 4 an hour; resets: 6 an hour;
+  - `/mcp`: 120 per 10 min per IP; the store's own loopback calls are exempt.
+- **Docker image:** a Node stage builds the two apps and installs `@paypal/mcp`. The runtime is Python 3.11 plus the Node binary. Python dependencies are pinned in `backend/requirements.lock`.
+  - Tested locally under a 512 MB cap: Ben's $900 injection was blocked (NOT SENT), and Reset and its rate limit work.
+- **Live PayPal webhooks (deferred since Day 8):** registered `7G186910H7896931H` to the Render URL. I made a real $38 refund for Ana through the deployed store. The decision's timeline shows ALLOW at 08:18:33, COMMITTED/COMPLETED at 08:18:35, and `PAYMENT.CAPTURE.REFUNDED` received, signature-verified and reconciled at 08:19:02.
+- **Postman collection** (`docs/postman`): you play the Support Agent over raw MCP (JSON-RPC over streamable HTTP):
+  - handshake and allowlisted `tools/list`;
+  - `get_order` from PayPal;
+  - $900 (BLOCK `E_EXCEEDS_CAPTURE`), Carla's capture (BLOCK `E_SUBJECT_MISMATCH`), `1e400` (BLOCK `E_INVALID_REQUEST`), and a real $10 refund (ALLOW);
+  - the owner API and auth checks.
+  - Under Newman against the container: 21 requests, 28 assertions, 0 failures.
+- **Clean clone:** cloned from GitHub, installed per the README, 252 tests passed, and both apps built. `run_demo.py` names the two setup steps that need sandbox keys.
+- **Tests: 252 passing** (25 new in `test_hosted.py`).
+
+Next (Day 15): the demo video (under 3 minutes) and the Devpost write-up, including testing instructions with the hosted owner and agent keys.
