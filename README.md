@@ -14,6 +14,19 @@ Every decision is audited with its rule-by-rule reasons and the mandate version 
 
 > Built for the PayPal AI Hackathon (2026). Everything runs against the **PayPal sandbox**. Progress log: [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md).
 
+**Live demo:** [intentguard-5dd9.onrender.com](https://intentguard-5dd9.onrender.com) (store) · [/console/](https://intentguard-5dd9.onrender.com/console/) (owner console; key in the Devpost testing instructions). The first load after idle takes about a minute.
+
+## Documentation
+
+| Document | What's in it |
+|---|---|
+| [docs/guide.html](docs/guide.html) | **The complete guide** (open it in a browser): the problem, what it does, how it works, design decisions, folder structure, how to run everything, configuration, testing, the demo video script, and the submission text |
+| [docs/hld.md](docs/hld.md) | High-level design: context, components, core flow, design decisions, trust boundaries, deployment |
+| [docs/lld.md](docs/lld.md) | Low-level design: the policy engine's rules and codes, gateway algorithms, ledger states, approvals, reconciliation, schema, modules, tests |
+| [docs/api.md](docs/api.md) | Every endpoint: MCP, owner API, store API, webhooks |
+| [docs/SECURITY.md](docs/SECURITY.md) | The trust model, and the test behind each security claim |
+| [docs/postman](docs/postman/IntentGuard.postman_collection.json) | Postman collection: be the agent over MCP |
+
 ## What to look at
 
 | Scenario | What happens | IntentGuard |
