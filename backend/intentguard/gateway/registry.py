@@ -66,9 +66,15 @@ def _agent(row: sqlite3.Row | None) -> Agent | None:
     )
 
 
-def register_owner(db: sqlite3.Connection, name: str) -> str:
-    """Create (or replace) a key for the store owner's API (review decisions). Returns the key once."""
-    owner_key = f"igo_{secrets.token_urlsafe(24)}"
+MIN_OWNER_KEY_CHARS = 20
+
+
+def register_owner(db: sqlite3.Connection, name: str, owner_key: str | None = None) -> str:
+    """Create (or replace) a key for the store owner's API (review decisions). Returns the key once.
+    A given key (the hosted demo's, from its environment) is used as-is if it's long enough to be a secret."""
+    if owner_key is not None and len(owner_key.strip()) < MIN_OWNER_KEY_CHARS:
+        raise ValueError(f"an owner key needs at least {MIN_OWNER_KEY_CHARS} characters")
+    owner_key = owner_key.strip() if owner_key is not None else f"igo_{secrets.token_urlsafe(24)}"
     db.execute("DELETE FROM owner_keys WHERE name = ?", (name,))
     db.execute("INSERT INTO owner_keys (key_hash, name) VALUES (?, ?)", (hash_key(owner_key), name))
     return owner_key

@@ -114,6 +114,8 @@ async function call<T>(key: string, path: string, init: RequestInit = {}): Promi
 
 export const getSummary = (key: string) => call<Summary>(key, "/owner/summary");
 export const getDetail = (key: string, id: string) => call<DecisionDetail>(key, `/owner/decisions/${id}`);
+export const resetDemo = (key: string) =>
+  call<{ orders: number; message: string }>(key, "/owner/demo/reset", { method: "POST" });
 export const decide = (key: string, reviewId: string, action: "approve" | "reject", note: string) =>
   call<ReviewResult>(key, `/owner/reviews/${reviewId}/${action}`, { method: "POST", body: JSON.stringify({ note }) });
 

@@ -1,0 +1,32 @@
+# Render Blueprint for the hosted demo (Render dashboard → New → Blueprint → this repo).
+# Secrets marked `sync: false` are asked for when the Blueprint is created; nothing secret lives here.
+services:
+  - type: web
+    name: intentguard
+    runtime: docker
+    plan: free
+    region: oregon  # near PayPal's sandbox API, which every chat turn calls several times
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      # The key judges type into the owner console (/console). Render generates a random one;
+      # copy it from the service's Environment page into Devpost's testing instructions.
+      - key: INTENTGUARD_OWNER_KEY
+        generateValue: true
+      # From scripts/register_webhook.py, after the first deploy gives the service its URL.
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: PAYPAL_ENVIRONMENT
+        value: SANDBOX
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
+      - key: GEMINI_FALLBACK_MODELS
+        value: gemini-3.5-flash,gemini-3-flash-preview,gemini-3.5-flash-lite
+      - key: RECONCILE_INTERVAL_S
+        value: "60"

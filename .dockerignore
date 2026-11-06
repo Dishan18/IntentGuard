@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+data/
+**/node_modules
+**/dist
+**/__pycache__
+**/*.egg-info
+backend/.venv
+backend/.pytest_cache
+backend/tests

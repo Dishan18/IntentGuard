@@ -1,6 +1,7 @@
 """How an agent runtime connects to the gateway. The runtime, not the LLM, supplies the agent key
 and the authenticated customer for the conversation."""
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -10,7 +11,8 @@ from mcp.shared._httpx_utils import create_mcp_http_client
 
 from intentguard.gateway.server import CUSTOMER_HEADER
 
-DEFAULT_GATEWAY_URL = "http://127.0.0.1:8765/mcp"
+# The hosted demo runs the gateway and the store in one process on one port, and sets this to match.
+DEFAULT_GATEWAY_URL = os.getenv("INTENTGUARD_GATEWAY_URL", "http://127.0.0.1:8765/mcp")
 
 
 @asynccontextmanager

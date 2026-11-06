@@ -87,6 +87,19 @@ Requirements: Python 3.11+, Node 22+, a PayPal sandbox app, and a free [Gemini A
    ```
 6. **Tests** (offline, no credentials): `cd backend && .venv/Scripts/python -m pytest`. What they cover from a security point of view, and the trust model, is in [docs/SECURITY.md](docs/SECURITY.md).
 
+### Or in Docker (how the hosted demo runs)
+
+One container, one port: the gateway and the store share it (`/mcp`, `/owner`, `/console`, `/webhooks`, `/health` go to the gateway, everything else to the store). On start it registers the agents, gives the owner the key in `INTENTGUARD_OWNER_KEY`, and seeds fresh sandbox orders if there are none.
+
+```bash
+docker build -t intentguard .
+docker run --env-file .env -e INTENTGUARD_OWNER_KEY=<any secret of 20+ characters> -p 10000:10000 intentguard
+```
+
+Store: http://localhost:10000 · Console: http://localhost:10000/console/ (sign in with that owner key).
+
+**Render:** `render.yaml` is a Blueprint for a free web service (Dashboard → **New** → **Blueprint** → this repo). It asks for the PayPal and Gemini secrets and generates the owner key. The hosted demo is rate-limited (chat turns, mandate compiles, red-team runs and resets) so a public URL can't exhaust the free-tier quotas. A free instance sleeps when idle; the first visit after that takes about a minute and starts from fresh orders.
+
 Free-tier Gemini has a daily quota per model. If one runs out, the agents fall back to the next model in `GEMINI_FALLBACK_MODELS`; if all are out, replies are built from IntentGuard's results instead, never claiming more than PayPal confirmed.
 
 ## Repository layout
@@ -99,10 +112,12 @@ backend/intentguard/
   agents/      Gemini client, the shared tool loop, Support and Billing agents
   paypal/      PayPal auth, REST client, MCP client
   storefront/  the demo store's API
+  hosted.py    the deployed demo: gateway + store on one port, start-up seeding, rate limits
 apps/store/    React demo store with the customer chat
 apps/console/  React + AG Grid owner console (served by the gateway at /console)
 paypal-mcp/    pinned PayPal MCP server, spawned by the gateway as its downstream
 scripts/       run_demo, reset_demo, checkpoint, chat, billing, reviews, reconcile, register_*
+Dockerfile, render.yaml   the hosted demo's image and Render Blueprint
 ```
 
 ## How decisions are made
@@ -276,7 +291,7 @@ backend/.venv/Scripts/python scripts/register_webhook.py --url https://<public-h
 
 Put the printed ID in `.env` as `PAYPAL_WEBHOOK_ID` and restart the gateway. Without webhooks, the poller alone keeps the ledger correct.
 
-To reset the demo (fresh sandbox orders, empty ledger, review queue and audit log):
+To reset the demo (fresh sandbox orders, empty ledger, review queue, audit log and red-team history), press **Reset demo** in the console, or:
 
 ```bash
 backend/.venv/Scripts/python scripts/reset_demo.py

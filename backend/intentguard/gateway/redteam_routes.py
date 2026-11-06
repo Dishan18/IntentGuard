@@ -5,7 +5,6 @@
     GET  /owner/redteam/runs/{run_id}
 """
 
-import os
 from collections.abc import Callable
 
 from starlette.background import BackgroundTask
@@ -24,7 +23,7 @@ MAX_GENERATED = 5
 
 
 def routes(get_state: Callable[[], object | None]) -> list[Route]:
-    gateway_url = os.getenv("INTENTGUARD_GATEWAY_URL", DEFAULT_GATEWAY_URL)
+    gateway_url = DEFAULT_GATEWAY_URL
 
     def not_ready() -> JSONResponse:
         return JSONResponse({"error": "E_NOT_READY", "message": "The gateway is still starting."}, 503)

@@ -1,5 +1,5 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { decide, follow, getSummary, type Review, type ReviewResult, saveKey, savedKey, type Snapshot, Unauthorized } from "./api";
+import { decide, follow, getSummary, resetDemo, type Review, type ReviewResult, saveKey, savedKey, type Snapshot, Unauthorized } from "./api";
 import { DetailPanel } from "./Detail";
 import { DecisionGrid } from "./Grid";
 import { Mandates } from "./Mandates";
@@ -57,7 +57,8 @@ function Login({ onKey }: { onKey: (key: string) => void }) {
         <label htmlFor="key">Owner key</label>
         <input id="key" type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} placeholder="igo_…" />
         <p className="muted small">
-          The <code>owner</code> entry in <code>data/agent_keys.json</code> (from <code>scripts/register_agents.py</code>). Agent keys don't work here.
+          Judges: use the key from the Devpost testing instructions. Running locally: the <code>owner</code> entry in{" "}
+          <code>data/agent_keys.json</code>. Agent keys don't work here.
         </p>
         {error && <p className="error">{error}</p>}
         <button className="primary" disabled={!key.trim() || busy}>
@@ -124,6 +125,7 @@ function Console({ ownerKey, onSignOut }: { ownerKey: string; onSignOut: () => v
             <span className="live-dot" aria-hidden />
             {live ? "Live" : "Reconnecting…"}
           </span>
+          <ResetButton ownerKey={ownerKey} onNotice={notify} />
           <button className="ghost" onClick={onSignOut}>
             Sign out
           </button>
@@ -206,6 +208,31 @@ function Kpi({ label, value, sub, tone }: { label: string; value: string; sub: s
 }
 
 type Notice = { id: number; text: string; tone: "ok" | "bad" };
+
+function ResetButton({ ownerKey, onNotice }: { ownerKey: string; onNotice: (notice: Omit<Notice, "id">) => void }) {
+  const [busy, setBusy] = useState(false);
+
+  async function reset() {
+    const sure = window.confirm(
+      "Reset the demo?\n\nThis creates fresh sandbox orders and clears the activity log, review queue, red-team results and any mandate changes.",
+    );
+    if (!sure) return;
+    setBusy(true);
+    try {
+      const result = await resetDemo(ownerKey);
+      onNotice({ text: `${result.message} Reload the store to see them.`, tone: "ok" });
+    } catch (error) {
+      onNotice({ text: `Reset failed: ${(error as Error).message}`, tone: "bad" });
+    }
+    setBusy(false);
+  }
+
+  return (
+    <button className="ghost" onClick={reset} disabled={busy} title="Fresh sandbox orders and an empty log">
+      {busy ? "Resetting…" : "Reset demo"}
+    </button>
+  );
+}
 
 /** What happened when the owner decided, in one sentence. */
 function describe(result: ReviewResult, amount: string, tool: string): Omit<Notice, "id"> {
