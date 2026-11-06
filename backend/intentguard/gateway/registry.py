@@ -29,10 +29,14 @@ def hash_key(api_key: str) -> str:
 
 
 def register(
-    db: sqlite3.Connection, agent_id: str, name: str, owner: str, purpose: str, allowed_tools: list[str]
+    db: sqlite3.Connection, agent_id: str, name: str, owner: str, purpose: str, allowed_tools: list[str],
+    api_key: str | None = None,
 ) -> str:
-    """Create or re-key an agent. Returns the new API key; it can't be recovered later."""
-    api_key = f"ig_{agent_id}_{secrets.token_urlsafe(24)}"
+    """Create or re-key an agent. Returns the new API key; it can't be recovered later. A given key
+    (the hosted demo's, from its environment) is used as-is if it's long enough to be a secret."""
+    if api_key is not None and len(api_key.strip()) < MIN_KEY_CHARS:
+        raise ValueError(f"an agent key needs at least {MIN_KEY_CHARS} characters")
+    api_key = api_key.strip() if api_key is not None else f"ig_{agent_id}_{secrets.token_urlsafe(24)}"
     db.execute(
         """
         INSERT INTO agents (id, name, owner, purpose, allowed_tools, key_hash) VALUES (?, ?, ?, ?, ?, ?)
@@ -66,14 +70,14 @@ def _agent(row: sqlite3.Row | None) -> Agent | None:
     )
 
 
-MIN_OWNER_KEY_CHARS = 20
+MIN_KEY_CHARS = 20
 
 
 def register_owner(db: sqlite3.Connection, name: str, owner_key: str | None = None) -> str:
     """Create (or replace) a key for the store owner's API (review decisions). Returns the key once.
     A given key (the hosted demo's, from its environment) is used as-is if it's long enough to be a secret."""
-    if owner_key is not None and len(owner_key.strip()) < MIN_OWNER_KEY_CHARS:
-        raise ValueError(f"an owner key needs at least {MIN_OWNER_KEY_CHARS} characters")
+    if owner_key is not None and len(owner_key.strip()) < MIN_KEY_CHARS:
+        raise ValueError(f"an owner key needs at least {MIN_KEY_CHARS} characters")
     owner_key = owner_key.strip() if owner_key is not None else f"igo_{secrets.token_urlsafe(24)}"
     db.execute("DELETE FROM owner_keys WHERE name = ?", (name,))
     db.execute("INSERT INTO owner_keys (key_hash, name) VALUES (?, ?)", (hash_key(owner_key), name))

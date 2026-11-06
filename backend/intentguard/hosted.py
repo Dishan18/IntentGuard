@@ -7,7 +7,8 @@ store's Support Agent still reaches the gateway over HTTP with its agent key, on
 the request path is the same as when they run as two servers.
 
 On start-up it registers the demo agents, gives the owner the key in INTENTGUARD_OWNER_KEY (so judges
-get one stable key), and seeds fresh sandbox orders if there are none: a free Render instance starts
+get one stable key) and, if INTENTGUARD_SUPPORT_AGENT_KEY is set, a fixed Support Agent key for
+calling /mcp directly, and seeds fresh sandbox orders if there are none: a free Render instance starts
 with an empty disk every time it wakes. Expensive endpoints are rate-limited (intentguard.ratelimit).
 """
 
@@ -48,9 +49,12 @@ def bootstrap() -> None:
     owner_key = os.getenv("INTENTGUARD_OWNER_KEY", "").strip()
     if not owner_key:
         raise SystemExit("Set INTENTGUARD_OWNER_KEY: it's the key judges use to open the owner console.")
+    # Optional: a fixed Support Agent key lets judges call /mcp themselves (the Postman collection),
+    # as the store's agent runtime would. Otherwise it's random on every start.
+    support_key = os.getenv("INTENTGUARD_SUPPORT_AGENT_KEY", "").strip()
     db = store.connect()
-    demo_data.register_agents(db, owner_key)
-    log.info("registered the demo agents and the owner key")
+    demo_data.register_agents(db, owner_key, {"support-agent": support_key} if support_key else None)
+    log.info("registered the demo agents and the owner key%s", " (fixed Support Agent key)" if support_key else "")
     if demo_data.SEED_FILE.exists():
         return
     try:

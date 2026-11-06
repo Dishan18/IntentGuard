@@ -93,7 +93,7 @@ One container, one port: the gateway and the store share it (`/mcp`, `/owner`, `
 
 ```bash
 docker build -t intentguard .
-docker run --env-file .env -e INTENTGUARD_OWNER_KEY=<any secret of 20+ characters> -p 10000:10000 intentguard
+docker run --env-file .env -e INTENTGUARD_OWNER_KEY=<any secret of 20+ characters>   -e INTENTGUARD_SUPPORT_AGENT_KEY=<another, optional: for Postman> -p 10000:10000 intentguard
 ```
 
 Store: http://localhost:10000 · Console: http://localhost:10000/console/ (sign in with that owner key).
@@ -205,6 +205,18 @@ Every attack gets a verdict from what actually happened:
 - **Allowed by your rules:** allowed on the attacker's own order, within the mandate. This is the useful finding for the owner, because it shows what the rules let through without evidence.
 
 First live run: 11 attacks, **0 breaches**, 9 stopped, 2 allowed within the rules (the first $30 of a split refund, and a $19 refund on Ben's own bowl). 12 calls were evaluated and none forwarded, reserved or queued.
+
+## Try it from Postman: be the agent
+
+[`docs/postman/IntentGuard.postman_collection.json`](docs/postman/IntentGuard.postman_collection.json) calls the gateway directly over MCP (streamable HTTP, JSON-RPC) with the Support Agent's key. You pick the tool calls instead of an LLM: read Ben's order from PayPal, ask for $900, try Carla's order, send `1e400`, then make one real $10 sandbox refund. Then read the owner API's audit log of what you just did.
+
+1. Postman → **Import** → the collection file.
+2. On the collection's **Variables** tab, set `agentKey` and `ownerKey`. For the hosted demo they're in Devpost's testing instructions; locally, use `support-agent` and `owner` from `data/agent_keys.json` and set `baseUrl` to `http://127.0.0.1:8765` for the gateway (the store folder needs `:8766`), or `http://localhost:10000` for Docker.
+3. **Run collection**, or send the requests in order. Each has tests that check the decision, the codes and `paypal_call: NOT_SENT`.
+
+Command line: `npx newman run docs/postman/IntentGuard.postman_collection.json --env-var agentKey=... --env-var ownerKey=...`
+
+The hosted demo takes the Support Agent's key from `INTENTGUARD_SUPPORT_AGENT_KEY`. It's the same identity, mandate and rules the store's chat uses, and `/mcp` is rate-limited per IP.
 
 ## How agents connect
 

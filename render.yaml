@@ -19,6 +19,10 @@ services:
       # copy it from the service's Environment page into Devpost's testing instructions.
       - key: INTENTGUARD_OWNER_KEY
         generateValue: true
+      # The Support Agent's key, for calling /mcp directly (docs/postman). Same identity, mandate and
+      # rules as the store's chat. Also goes in Devpost's testing instructions.
+      - key: INTENTGUARD_SUPPORT_AGENT_KEY
+        generateValue: true
       # From scripts/register_webhook.py, after the first deploy gives the service its URL.
       - key: PAYPAL_WEBHOOK_ID
         sync: false

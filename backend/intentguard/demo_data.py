@@ -130,10 +130,16 @@ def write_orders(orders: list[dict]) -> None:
     SEED_FILE.write_text(json.dumps(orders, indent=2) + "\n", encoding="utf-8")
 
 
-def register_agents(db: sqlite3.Connection, owner_key: str | None = None) -> dict[str, str]:
+def register_agents(
+    db: sqlite3.Connection, owner_key: str | None = None, agent_keys: dict[str, str] | None = None
+) -> dict[str, str]:
     """Register (re-key) the demo agents and the owner, and write the keys to data/agent_keys.json.
-    With `owner_key`, the owner gets that key (the hosted demo's, from its environment) instead of a new one."""
-    keys = {agent["agent_id"]: registry.register(db, **agent) for agent in DEMO_AGENTS}
+    Given keys (the hosted demo's, from its environment) are used instead of new ones."""
+    agent_keys = agent_keys or {}
+    keys = {
+        agent["agent_id"]: registry.register(db, **agent, api_key=agent_keys.get(agent["agent_id"]))
+        for agent in DEMO_AGENTS
+    }
     keys["owner"] = registry.register_owner(db, OWNER_NAME, owner_key)
     KEYS_FILE.parent.mkdir(exist_ok=True)
     KEYS_FILE.write_text(json.dumps(keys, indent=2) + "\n", encoding="utf-8")

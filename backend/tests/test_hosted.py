@@ -166,3 +166,22 @@ async def test_a_failed_reset_says_so(db):
         response = await http.post("/owner/demo/reset", headers={"Authorization": f"Bearer {owner_key}"})
     assert response.status_code == 502
     assert response.json()["error"] == "E_RESET_FAILED"
+
+
+@pytest.mark.anyio
+async def test_calls_from_inside_the_process_are_not_limited():
+    app = RateLimit(named("gateway"), (Limit("POST", "/mcp", 1, 60, True, "x"),), clock=lambda: 0.0)
+    async with client(app, "127.0.0.1") as http:  # the store's agent reaching the gateway over loopback
+        for _ in range(5):
+            assert (await http.post("/mcp")).status_code == 200
+    async with client(app, "198.51.100.9") as http:
+        assert (await http.post("/mcp")).status_code == 200
+        assert (await http.post("/mcp")).status_code == 429
+
+
+def test_a_fixed_agent_key_from_the_environment(db):
+    key = registry.register(db, "support-agent", "Support", "o", "p", ["create_refund"], api_key="a-fixed-support-agent-key")
+    assert key == "a-fixed-support-agent-key"
+    assert registry.authenticate(db, key).id == "support-agent"
+    with pytest.raises(ValueError):
+        registry.register(db, "support-agent", "Support", "o", "p", ["create_refund"], api_key="short")

@@ -1,7 +1,8 @@
 """Rate limits for the hosted demo, so a public URL can't burn through the LLM quota or the sandbox.
 
 Sliding windows held in memory (one process, and a restart forgets them, which is fine for a demo).
-Only the expensive endpoints are limited: chat turns, mandate compiles, red-team runs and resets.
+Only the expensive endpoints are limited: chat turns, mandate compiles, red-team runs, resets, and
+direct agent calls to /mcp. Calls from inside the process (the store's agent over loopback) aren't.
 """
 
 import json
@@ -34,7 +35,10 @@ HOSTED_LIMITS = (
     Limit("POST", "/owner/mandates/compile", 80, DAY, False, "The demo has used today's compile budget. Try again tomorrow."),
     Limit("POST", "/owner/redteam/runs", 4, HOUR, False, "The red team has run 4 times this hour. Try again later."),
     Limit("POST", "/owner/demo/reset", 6, HOUR, False, "The demo has been reset 6 times this hour. Try again later."),
+    Limit("POST", "/mcp", 120, 10 * 60, True, "Too many MCP requests. Try again in a few minutes."),
 )
+
+LOOPBACK = ("127.0.0.1", "::1")
 
 
 def client_ip(scope: Scope) -> str:
@@ -70,7 +74,7 @@ class RateLimit:
             (i, limit) for i, limit in enumerate(self._limits)
             if scope["method"] == limit.method and scope["path"].rstrip("/") == limit.path
         ]
-        if not matching:
+        if not matching or client_ip(scope) in LOOPBACK:
             return None
         now = self._clock()
         windows = []

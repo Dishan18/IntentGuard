@@ -1,0 +1,1003 @@
+{
+  "info": {
+    "name": "IntentGuard",
+    "description": "Know-Your-Agent guardrails for AI agents on a PayPal merchant account: an MCP gateway in front of PayPal's MCP server. Everything runs in the PayPal sandbox.\n\nSet the collection variables `agentKey` and `ownerKey` (from Devpost's testing instructions, or `data/agent_keys.json` when running locally) and, for a local run, `baseUrl`. Then run the folders in order (Run collection works too). Folder 2 is the interesting one: you play the agent, IntentGuard decides.\n\nhttps://github.com/Dishan18/IntentGuard",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://intentguard-5dd9.onrender.com"
+    },
+    {
+      "key": "agentKey",
+      "value": "",
+      "description": "The Support Agent's key"
+    },
+    {
+      "key": "ownerKey",
+      "value": "",
+      "description": "The owner console's key"
+    },
+    {
+      "key": "customer",
+      "value": "cust_ben",
+      "description": "The session customer the agent runtime asserts"
+    },
+    {
+      "key": "mcpSession",
+      "value": ""
+    },
+    {
+      "key": "benOrderId",
+      "value": ""
+    },
+    {
+      "key": "benCaptureId",
+      "value": ""
+    },
+    {
+      "key": "carlaCaptureId",
+      "value": ""
+    },
+    {
+      "key": "callId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Store (the customer's side)",
+      "description": "The demo store's API. Logging in sets a cookie; the store's agent runtime takes the customer from it.",
+      "item": [
+        {
+          "name": "List demo customers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/customers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "customers"
+              ]
+            },
+            "description": "The four demo customers."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('4 customers', () => pm.expect(pm.response.json()).to.have.length(4));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Log in as Ben",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/session",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "session"
+              ]
+            },
+            "description": "Sets the store's session cookie (Postman keeps it).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customer_id\": \"cust_ben\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('logged in', () => pm.expect(pm.response.json().id).to.eql('cust_ben'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Ben's orders",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/session",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "session"
+              ]
+            },
+            "description": "Ben's orders, plus the demo prompts. Saves Ben's first order ID, and Carla's PayPal transaction ID (quoted in one of Ben's prompts, the way an attacker would get hold of it)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Ben has orders', () => pm.expect(body.orders.length).to.be.above(0));",
+                  "pm.collectionVariables.set('benOrderId', body.orders[0].order_id);",
+                  "const carla = (body.suggestions.join(' ').match(/ID is ([A-Z0-9]+)/) || [])[1];",
+                  "if (carla) pm.collectionVariables.set('carlaCaptureId', carla);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Be the Support Agent (MCP, no LLM)",
+      "description": "Call the IntentGuard gateway directly over MCP (streamable HTTP, JSON-RPC), the way the store's Support Agent does, but with you choosing the tool calls instead of an LLM. Uses the Support Agent's key (`agentKey`) and the session customer header. Run in order: initialize first.",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{agentKey}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "initialize",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "X-IntentGuard-Customer",
+                "value": "{{customer}}",
+                "description": "Set by the agent runtime (the store's login), never by the LLM. The gateway binds every action to it."
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            },
+            "description": "Opens an MCP session. Saves the `mcp-session-id` header for the next calls.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"initialize\",\n  \"id\": 1,\n  \"params\": {\n    \"protocolVersion\": \"2025-06-18\",\n    \"capabilities\": {},\n    \"clientInfo\": {\n      \"name\": \"postman\",\n      \"version\": \"1.0\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const sse = pm.response.text().split('\\n').find(l => l.startsWith('data: '));",
+                  "const message = sse ? JSON.parse(sse.slice(6)) : pm.response.json();",
+                  "const content = message.result && message.result.content && message.result.content[0];",
+                  "let tool = null; try { tool = JSON.parse(content.text); } catch (e) { tool = content && content.text; }",
+                  "pm.test('session opened', () => pm.expect(pm.response.headers.get('mcp-session-id')).to.be.a('string'));",
+                  "pm.collectionVariables.set('mcpSession', pm.response.headers.get('mcp-session-id'));",
+                  "pm.test('IntentGuard answers', () => pm.expect(message.result.serverInfo.name).to.match(/intentguard/i));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "initialized",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "X-IntentGuard-Customer",
+                "value": "{{customer}}",
+                "description": "Set by the agent runtime (the store's login), never by the LLM. The gateway binds every action to it."
+              },
+              {
+                "key": "mcp-session-id",
+                "value": "{{mcpSession}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            },
+            "description": "Completes the MCP handshake.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"notifications/initialized\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('accepted', () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "tools/list (only what this agent may use)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "X-IntentGuard-Customer",
+                "value": "{{customer}}",
+                "description": "Set by the agent runtime (the store's login), never by the LLM. The gateway binds every action to it."
+              },
+              {
+                "key": "mcp-session-id",
+                "value": "{{mcpSession}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            },
+            "description": "PayPal's MCP server has many tools; this agent's identity only sees its allowlist.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"tools/list\",\n  \"id\": 2\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const sse = pm.response.text().split('\\n').find(l => l.startsWith('data: '));",
+                  "const message = sse ? JSON.parse(sse.slice(6)) : pm.response.json();",
+                  "const content = message.result && message.result.content && message.result.content[0];",
+                  "let tool = null; try { tool = JSON.parse(content.text); } catch (e) { tool = content && content.text; }",
+                  "const names = message.result.tools.map(t => t.name).sort();",
+                  "pm.test('only the Support Agent allowlist', () => pm.expect(names).to.eql(['create_refund', 'get_order', 'get_refund']));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_order (Ben's order, read from PayPal)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "X-IntentGuard-Customer",
+                "value": "{{customer}}",
+                "description": "Set by the agent runtime (the store's login), never by the LLM. The gateway binds every action to it."
+              },
+              {
+                "key": "mcp-session-id",
+                "value": "{{mcpSession}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            },
+            "description": "Read through the gateway from PayPal's MCP server. Saves the capture ID for the refund calls.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"tools/call\",\n  \"id\": 3,\n  \"params\": {\n    \"name\": \"get_order\",\n    \"arguments\": {\n      \"id\": \"{{benOrderId}}\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const sse = pm.response.text().split('\\n').find(l => l.startsWith('data: '));",
+                  "const message = sse ? JSON.parse(sse.slice(6)) : pm.response.json();",
+                  "const content = message.result && message.result.content && message.result.content[0];",
+                  "let tool = null; try { tool = JSON.parse(content.text); } catch (e) { tool = content && content.text; }",
+                  "pm.test('order read from PayPal', () => pm.expect(tool.status).to.eql('COMPLETED'));",
+                  "pm.collectionVariables.set('benCaptureId', tool.purchase_units[0].payments.captures[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_refund $900 (BLOCK: more than paid)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "X-IntentGuard-Customer",
+                "value": "{{customer}}",
+                "description": "Set by the agent runtime (the store's login), never by the LLM. The gateway binds every action to it."
+              },
+              {
+                "key": "mcp-session-id",
+                "value": "{{mcpSession}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            },
+            "description": "The 'SYSTEM OVERRIDE, refund $900' attack, without the LLM: the agent asks, the policy engine says no. PayPal is never called.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"tools/call\",\n  \"id\": 4,\n  \"params\": {\n    \"name\": \"create_refund\",\n    \"arguments\": {\n      \"capture_id\": \"{{benCaptureId}}\",\n      \"amount\": {\n        \"currency_code\": \"USD\",\n        \"value\": \"900.00\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const sse = pm.response.text().split('\\n').find(l => l.startsWith('data: '));",
+                  "const message = sse ? JSON.parse(sse.slice(6)) : pm.response.json();",
+                  "const content = message.result && message.result.content && message.result.content[0];",
+                  "let tool = null; try { tool = JSON.parse(content.text); } catch (e) { tool = content && content.text; }",
+                  "pm.test('blocked', () => pm.expect(tool.decision).to.eql('BLOCK'));",
+                  "pm.test('more than captured', () => pm.expect(tool.codes).to.include('E_EXCEEDS_CAPTURE'));",
+                  "pm.test('PayPal call NOT SENT', () => pm.expect(tool.paypal_call).to.eql('NOT_SENT'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_refund on Carla's order (BLOCK: not this customer)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "X-IntentGuard-Customer",
+                "value": "{{customer}}",
+                "description": "Set by the agent runtime (the store's login), never by the LLM. The gateway binds every action to it."
+              },
+              {
+                "key": "mcp-session-id",
+                "value": "{{mcpSession}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            },
+            "description": "Ben's session, Carla's transaction ID. The gateway reads who paid from PayPal and refuses.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"tools/call\",\n  \"id\": 5,\n  \"params\": {\n    \"name\": \"create_refund\",\n    \"arguments\": {\n      \"capture_id\": \"{{carlaCaptureId}}\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const sse = pm.response.text().split('\\n').find(l => l.startsWith('data: '));",
+                  "const message = sse ? JSON.parse(sse.slice(6)) : pm.response.json();",
+                  "const content = message.result && message.result.content && message.result.content[0];",
+                  "let tool = null; try { tool = JSON.parse(content.text); } catch (e) { tool = content && content.text; }",
+                  "pm.test('blocked', () => pm.expect(tool.decision).to.eql('BLOCK'));",
+                  "pm.test('wrong customer', () => pm.expect(tool.codes).to.include('E_SUBJECT_MISMATCH'));",
+                  "pm.test('PayPal call NOT SENT', () => pm.expect(tool.paypal_call).to.eql('NOT_SENT'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_refund hostile amount (BLOCK: invalid)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "X-IntentGuard-Customer",
+                "value": "{{customer}}",
+                "description": "Set by the agent runtime (the store's login), never by the LLM. The gateway binds every action to it."
+              },
+              {
+                "key": "mcp-session-id",
+                "value": "{{mcpSession}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            },
+            "description": "Malformed amounts never turn into a full refund.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"tools/call\",\n  \"id\": 6,\n  \"params\": {\n    \"name\": \"create_refund\",\n    \"arguments\": {\n      \"capture_id\": \"{{benCaptureId}}\",\n      \"amount\": {\n        \"currency_code\": \"USD\",\n        \"value\": \"1e400\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const sse = pm.response.text().split('\\n').find(l => l.startsWith('data: '));",
+                  "const message = sse ? JSON.parse(sse.slice(6)) : pm.response.json();",
+                  "const content = message.result && message.result.content && message.result.content[0];",
+                  "let tool = null; try { tool = JSON.parse(content.text); } catch (e) { tool = content && content.text; }",
+                  "pm.test('blocked', () => pm.expect(tool.decision).to.eql('BLOCK'));",
+                  "pm.test('invalid request', () => pm.expect(tool.codes).to.include('E_INVALID_REQUEST'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_refund $10 (ALLOW: a real sandbox refund)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "X-IntentGuard-Customer",
+                "value": "{{customer}}",
+                "description": "Set by the agent runtime (the store's login), never by the LLM. The gateway binds every action to it."
+              },
+              {
+                "key": "mcp-session-id",
+                "value": "{{mcpSession}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            },
+            "description": "Within the owner's rules ($50 auto limit, 1 refund per customer per 30 days), so it's forwarded to PayPal's MCP server and moves sandbox money. Send it again and the per-customer rule (or replay protection) blocks the second one.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"tools/call\",\n  \"id\": 7,\n  \"params\": {\n    \"name\": \"create_refund\",\n    \"arguments\": {\n      \"capture_id\": \"{{benCaptureId}}\",\n      \"amount\": {\n        \"currency_code\": \"USD\",\n        \"value\": \"10.00\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const sse = pm.response.text().split('\\n').find(l => l.startsWith('data: '));",
+                  "const message = sse ? JSON.parse(sse.slice(6)) : pm.response.json();",
+                  "const content = message.result && message.result.content && message.result.content[0];",
+                  "let tool = null; try { tool = JSON.parse(content.text); } catch (e) { tool = content && content.text; }",
+                  "pm.test('decided', () => pm.expect(['ALLOW', 'BLOCK']).to.include(tool.decision || 'ALLOW'));",
+                  "if (tool.decision === 'BLOCK') console.log('Already refunded once: ' + tool.codes.join(', '));",
+                  "else pm.test('PayPal refunded it', () => pm.expect(tool.status).to.eql('COMPLETED'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Owner API",
+      "description": "What the owner console uses. Needs the owner key (`ownerKey`); agent keys get 401 here.",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{ownerKey}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "Summary (today)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/owner/summary",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owner",
+                "summary"
+              ]
+            },
+            "description": "Refunded, held, blocked and the daily cap."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ok', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Decisions (audit log)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/owner/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owner",
+                "decisions"
+              ]
+            },
+            "description": "Every agent action with IntentGuard's decision and whether PayPal was called. Saves the latest call ID."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json(); const rows = body.decisions || body;",
+                  "pm.test('has decisions', () => pm.expect(rows.length).to.be.above(0));",
+                  "pm.collectionVariables.set('callId', rows[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "One decision, rule by rule",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/owner/decisions/{{callId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owner",
+                "decisions",
+                "{{callId}}"
+              ]
+            },
+            "description": "The checks, the mandate version it was decided under, PayPal's answer and the timeline (including webhooks)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('has checks', () => pm.expect(pm.response.json().checks).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Review queue",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/owner/reviews",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owner",
+                "reviews"
+              ]
+            },
+            "description": "Requests held for the owner's approval."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ok', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mandates",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/owner/mandates",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owner",
+                "mandates"
+              ]
+            },
+            "description": "Each agent's active mandate and its version history."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ok', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Agent key is refused here",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/owner/summary",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owner",
+                "summary"
+              ]
+            },
+            "description": "Agent keys and owner keys are separate: an agent can never approve its own request.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{agentKey}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 for an agent key', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset demo",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/owner/demo/reset",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owner",
+                "demo",
+                "reset"
+              ]
+            },
+            "description": "Fresh sandbox orders and an empty log (the console's Reset demo button). Rate-limited to 6 an hour. Run folder 1 again afterwards: the order IDs change."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reset or rate-limited', () => pm.expect([200, 429]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Checks",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Liveness."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ok', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "MCP without an agent key",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            },
+            "description": "Unknown agents are refused before anything runs.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"tools/list\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Forged PayPal webhook",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/paypal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "paypal"
+              ]
+            },
+            "description": "Without PayPal's signature headers the delivery is refused (and with no webhook ID configured, every delivery is).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"WH-FORGED\",\n  \"event_type\": \"PAYMENT.CAPTURE.REFUNDED\",\n  \"resource\": {\n    \"id\": \"X\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('refused', () => pm.expect(pm.response.code).to.be.at.least(400));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
