@@ -77,6 +77,8 @@ def main() -> None:
     # Before anything imports the gateway client, whose default URL comes from here; hence the
     # imports inside bootstrap() and build().
     os.environ.setdefault("INTENTGUARD_GATEWAY_URL", f"http://127.0.0.1:{port}/mcp")
+    # The hosted demo shows judges its owner key on the console's sign-in page (gateway/app.py).
+    os.environ.setdefault("INTENTGUARD_SHOW_OWNER_KEY", "1")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     bootstrap()

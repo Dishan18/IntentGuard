@@ -28,18 +28,43 @@ function Login({ onKey }: { onKey: (key: string) => void }) {
   const [key, setKey] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [demoKey, setDemoKey] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
-  async function submit(event: FormEvent) {
-    event.preventDefault();
+  useEffect(() => {
+    // The hosted demo publishes its sandbox owner key for judges; elsewhere this is null.
+    fetch("demo.json")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => setDemoKey(body?.owner_key ?? null))
+      .catch(() => setDemoKey(null));
+  }, []);
+
+  async function open(candidate: string) {
     setBusy(true);
     setError("");
     try {
-      await getSummary(key.trim());
-      onKey(key.trim());
+      await getSummary(candidate);
+      onKey(candidate);
     } catch (e) {
       setError(e instanceof Unauthorized ? "That owner key isn't valid." : `Can't reach the gateway: ${(e as Error).message}`);
     }
     setBusy(false);
+  }
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    void open(key.trim());
+  }
+
+  async function copy() {
+    if (!demoKey) return;
+    try {
+      await navigator.clipboard.writeText(demoKey);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setKey(demoKey); // no clipboard access: put it in the field instead
+    }
   }
 
   return (
@@ -64,6 +89,21 @@ function Login({ onKey }: { onKey: (key: string) => void }) {
         <button className="primary" disabled={!key.trim() || busy}>
           {busy ? "Checking…" : "Open console"}
         </button>
+        {demoKey && (
+          <div className="demo-key">
+            <p className="demo-key-title">Demo owner key (for judges)</p>
+            <code className="demo-key-value">{demoKey}</code>
+            <div className="demo-key-actions">
+              <button type="button" className="ghost" onClick={copy}>
+                {copied ? "Copied" : "Copy"}
+              </button>
+              <button type="button" className="ghost" onClick={() => (setKey(demoKey), void open(demoKey))} disabled={busy}>
+                Use this key
+              </button>
+            </div>
+            <p className="muted small">PayPal sandbox only. Shared so judges can try the owner's side.</p>
+          </div>
+        )}
       </form>
     </main>
   );

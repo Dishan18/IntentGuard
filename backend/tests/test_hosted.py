@@ -185,3 +185,15 @@ def test_a_fixed_agent_key_from_the_environment(db):
     assert registry.authenticate(db, key).id == "support-agent"
     with pytest.raises(ValueError):
         registry.register(db, "support-agent", "Support", "o", "p", ["create_refund"], api_key="short")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("show, expected", [("1", "a-long-enough-hosted-owner-key"), ("", None)])
+async def test_the_hosted_demo_publishes_its_owner_key_only_when_told_to(monkeypatch, show, expected):
+    from intentguard.gateway.app import demo_info
+
+    monkeypatch.setenv("INTENTGUARD_OWNER_KEY", "a-long-enough-hosted-owner-key")
+    monkeypatch.setenv("INTENTGUARD_SHOW_OWNER_KEY", show)
+    app = Starlette(routes=[Route("/console/demo.json", demo_info)])
+    async with client(app) as http:
+        assert (await http.get("/console/demo.json")).json() == {"owner_key": expected}

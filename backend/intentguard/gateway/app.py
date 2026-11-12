@@ -2,6 +2,7 @@
 console data), PayPal webhooks at /webhooks/paypal (verified by signature, not by key), the owner
 console's static files at /console (the data behind it needs the owner key), and /health."""
 
+import os
 import sqlite3
 
 from starlette.requests import Request
@@ -55,6 +56,16 @@ async def health(_: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
+async def demo_info(_: Request) -> JSONResponse:
+    """The hosted demo publishes its owner key so judges can open the console: it's a sandbox-only
+    key, already shared in the testing instructions. Off unless INTENTGUARD_SHOW_OWNER_KEY is set
+    (python -m intentguard.hosted sets it), so a local or real deployment never exposes it."""
+    key = os.getenv("INTENTGUARD_OWNER_KEY", "").strip()
+    if os.getenv("INTENTGUARD_SHOW_OWNER_KEY", "").lower() not in ("1", "true", "yes") or not key:
+        return JSONResponse({"owner_key": None})
+    return JSONResponse({"owner_key": key})
+
+
 def build_app(db: sqlite3.Connection | None = None, host: str = "127.0.0.1") -> ASGIApp:
     db = db or store.connect()
     running: list[GatewayState | None] = [None]
@@ -65,6 +76,7 @@ def build_app(db: sqlite3.Connection | None = None, host: str = "127.0.0.1") -> 
     server = build_server(db, on_state)
     routes = [
         Route("/health", health),
+        Route("/console/demo.json", demo_info),  # before the /console static mount, which would shadow it
         *owner.routes(lambda: running[0]),
         *console.routes(lambda: running[0]),
         *mandate_routes.routes(lambda: running[0]),

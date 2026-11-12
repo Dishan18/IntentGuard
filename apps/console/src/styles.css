@@ -1267,3 +1267,31 @@ blockquote.attacker {
 .attack details summary {
   cursor: pointer;
 }
+
+.demo-key {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+}
+.demo-key-title {
+  margin: 0;
+  font-weight: 600;
+}
+.demo-key-value {
+  display: block;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.demo-key-actions {
+  display: flex;
+  gap: 8px;
+}
+.demo-key .small {
+  margin: 0;
+}
